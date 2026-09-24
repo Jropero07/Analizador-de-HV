@@ -11,7 +11,12 @@ from ai_engine import extraer_datos_candidato, analizar_candidato_vs_vacante
 from ponderacion import generar_tabla_ponderacion_html
 
 # Inicializar Base de Datos SQLite al arrancar
-database.inicializar_db()
+@st.cache_resource(show_spinner=False)
+def _iniciar_db():
+    database.inicializar_db()
+
+
+_iniciar_db()
 
 # Configuración de página
 st.set_page_config(
