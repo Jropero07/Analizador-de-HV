@@ -1,0 +1,1778 @@
+import os
+import sqlite3
+import json
+from datetime import datetime
+import pandas as pd
+
+
+# ============================================================
+# CONFIGURACIÓN
+# ============================================================
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(BASE_DIR, "data")
+DB_PATH = os.path.join(DATA_DIR, "asistente_tthh.db")
+
+os.makedirs(DATA_DIR, exist_ok=True)
+
+
+# ============================================================
+# CONEXIÓN
+# ============================================================
+
+def obtener_conexion():
+    """
+    Crea una conexión SQLite con:
+    - Row factory para acceder a columnas por nombre.
+    - Foreign Keys activadas.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+    return conn
+
+
+# ============================================================
+# INICIALIZACIÓN Y MIGRACIONES
+# ============================================================
+
+def inicializar_db():
+    """
+    Inicializa la base de datos PRO.
+
+    Las tablas nuevas se crean sin eliminar información existente.
+    """
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    # --------------------------------------------------------
+    # VACANTES
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS vacantes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            titulo TEXT NOT NULL,
+            area TEXT NOT NULL,
+            descripcion TEXT,
+            formacion TEXT,
+            experiencia TEXT,
+            habilidades TEXT,
+            otros_criterios TEXT,
+            estado TEXT NOT NULL DEFAULT 'Abierta',
+            fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+            fecha_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+            fecha_cierre DATETIME
+        )
+    """)
+
+    # --------------------------------------------------------
+    # CANDIDATOS
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS candidatos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            documento TEXT,
+            telefono TEXT,
+            email TEXT,
+            formacion TEXT,
+            experiencia TEXT,
+            habilidades TEXT,
+            fecha_registro DATETIME DEFAULT CURRENT_TIMESTAMP,
+            fecha_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # --------------------------------------------------------
+    # POSTULACIONES
+    #
+    # Una persona puede tener varias postulaciones.
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS postulaciones (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            candidato_id INTEGER NOT NULL,
+            vacante_id INTEGER NOT NULL,
+
+            fuente TEXT NOT NULL DEFAULT 'Manual',
+
+            estado TEXT NOT NULL DEFAULT 'Pendiente',
+
+            archivo_nombre TEXT,
+            archivo_ruta TEXT,
+            archivo_tipo TEXT,
+
+            texto_hv TEXT,
+
+            fecha_postulacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+            fecha_actualizacion DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (candidato_id)
+                REFERENCES candidatos(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (vacante_id)
+                REFERENCES vacantes(id)
+                ON DELETE CASCADE,
+
+            UNIQUE(candidato_id, vacante_id)
+        )
+    """)
+
+    # --------------------------------------------------------
+    # ANÁLISIS IA
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS analisis (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            postulacion_id INTEGER,
+
+            candidato_id INTEGER NOT NULL,
+            vacante_id INTEGER NOT NULL,
+
+            puntaje_total INTEGER,
+
+            decision TEXT,
+
+            resumen_ejecutivo TEXT,
+
+            cumplimiento_json TEXT,
+
+            alertas_json TEXT,
+
+            modelo_ia TEXT,
+
+            estado TEXT NOT NULL DEFAULT 'Completado',
+
+            error TEXT,
+
+            fecha_analisis DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            FOREIGN KEY (postulacion_id)
+                REFERENCES postulaciones(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (candidato_id)
+                REFERENCES candidatos(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (vacante_id)
+                REFERENCES vacantes(id)
+                ON DELETE CASCADE
+        )
+    """)
+
+    # --------------------------------------------------------
+    # PROCESAMIENTO DE ARCHIVOS
+    #
+    # Permite controlar carga masiva y correo.
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS documentos (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            postulacion_id INTEGER,
+
+            candidato_id INTEGER,
+
+            nombre_archivo TEXT NOT NULL,
+
+            ruta_archivo TEXT,
+
+            tipo_archivo TEXT,
+
+            origen TEXT NOT NULL DEFAULT 'Carga masiva',
+
+            estado_procesamiento TEXT NOT NULL DEFAULT 'Pendiente',
+
+            error TEXT,
+
+            fecha_recepcion DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+            fecha_procesamiento DATETIME,
+
+            FOREIGN KEY (postulacion_id)
+                REFERENCES postulaciones(id)
+                ON DELETE CASCADE,
+
+            FOREIGN KEY (candidato_id)
+                REFERENCES candidatos(id)
+                ON DELETE SET NULL
+        )
+    """)
+
+    # --------------------------------------------------------
+    # CORREOS PROCESADOS
+    #
+    # Evita volver a procesar el mismo correo.
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS correos_procesados (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            message_id TEXT NOT NULL UNIQUE,
+
+            asunto TEXT,
+
+            remitente TEXT,
+
+            fecha_correo TEXT,
+
+            cantidad_adjuntos INTEGER DEFAULT 0,
+
+            estado TEXT NOT NULL DEFAULT 'Procesado',
+
+            error TEXT,
+
+            fecha_procesamiento DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # --------------------------------------------------------
+    # HISTORIAL
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS historial (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+
+            entidad TEXT NOT NULL,
+
+            entidad_id INTEGER,
+
+            accion TEXT NOT NULL,
+
+            descripcion TEXT,
+
+            fecha DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    # --------------------------------------------------------
+    # CONFIGURACIÓN
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS configuracion (
+            clave TEXT PRIMARY KEY,
+            valor TEXT
+        )
+    """)
+
+    # --------------------------------------------------------
+    # ÍNDICES
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_vacantes_estado
+        ON vacantes(estado)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_candidatos_documento
+        ON candidatos(documento)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_candidatos_email
+        ON candidatos(email)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_postulaciones_vacante
+        ON postulaciones(vacante_id)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_postulaciones_candidato
+        ON postulaciones(candidato_id)
+    """)
+
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_analisis_puntaje
+        ON analisis(puntaje_total)
+    """)
+
+    # --------------------------------------------------------
+    # MIGRACIONES DE COLUMNAS
+    # --------------------------------------------------------
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "vacantes",
+        "fecha_actualizacion",
+        "DATETIME"
+    )
+
+    cursor.execute("""
+        UPDATE vacantes
+        SET fecha_actualizacion = fecha_creacion
+        WHERE fecha_actualizacion IS NULL
+    """)
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "vacantes",
+        "fecha_cierre",
+        "DATETIME"
+    )
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "analisis",
+        "postulacion_id",
+        "INTEGER"
+    )
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "analisis",
+        "modelo_ia",
+        "TEXT"
+    )
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "analisis",
+        "estado",
+        "TEXT"
+    )
+
+    cursor.execute("""
+        UPDATE analisis
+        SET estado = 'Completado'
+        WHERE estado IS NULL
+    """)
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "analisis",
+        "error",
+        "TEXT"
+    )
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "analisis",
+        "alertas_json",
+        "TEXT"
+    )
+
+    _agregar_columna_si_no_existe(
+        cursor,
+        "candidatos",
+        "fecha_actualizacion",
+        "DATETIME"
+    )
+
+    cursor.execute("""
+        UPDATE candidatos
+        SET fecha_actualizacion = CURRENT_TIMESTAMP
+        WHERE fecha_actualizacion IS NULL
+    """)
+
+    # --------------------------------------------------------
+    # MIGRACIÓN DE ESTADOS ANTIGUOS Y DATOS PREVIOS
+    # --------------------------------------------------------
+
+    cursor.execute("""
+        UPDATE vacantes
+        SET estado = 'Abierta'
+        WHERE estado = 'Activa'
+    """)
+
+    # Si la tabla candidatos tiene la columna vacante_id de versiones previas,
+    # migrar automáticamente a la tabla postulaciones para no perder la relación
+    cursor.execute("PRAGMA table_info(candidatos)")
+    cand_cols = [row[1] for row in cursor.fetchall()]
+    if "vacante_id" in cand_cols:
+        cursor.execute("""
+            INSERT OR IGNORE INTO postulaciones (candidato_id, vacante_id, fuente, estado)
+            SELECT id, vacante_id, 'Migración inicial', 'Pendiente'
+            FROM candidatos
+            WHERE vacante_id IS NOT NULL
+              AND vacante_id IN (SELECT id FROM vacantes)
+        """)
+        cursor.execute("""
+            UPDATE candidatos
+            SET vacante_id = NULL
+            WHERE vacante_id IS NOT NULL
+        """)
+
+    conn.commit()
+    conn.close()
+
+
+def _agregar_columna_si_no_existe(cursor, tabla, columna, definicion):
+    """
+    Agrega una columna únicamente si todavía no existe.
+    """
+    cursor.execute(f"PRAGMA table_info({tabla})")
+    columnas = [row["name"] for row in cursor.fetchall()]
+
+    if columna not in columnas:
+        cursor.execute(
+            f"ALTER TABLE {tabla} ADD COLUMN {columna} {definicion}"
+        )
+
+
+# ============================================================
+# UTILIDADES
+# ============================================================
+
+def _normalizar(valor):
+    if valor is None:
+        return ""
+
+    return str(valor).strip()
+
+
+def _normalizar_email(email):
+    return _normalizar(email).lower()
+
+
+def _normalizar_documento(documento):
+    return _normalizar(documento).replace(" ", "").replace(".", "")
+
+
+def _registrar_historial(
+    cursor,
+    entidad,
+    entidad_id,
+    accion,
+    descripcion=""
+):
+    cursor.execute("""
+        INSERT INTO historial (
+            entidad,
+            entidad_id,
+            accion,
+            descripcion
+        )
+        VALUES (?, ?, ?, ?)
+    """, (
+        entidad,
+        entidad_id,
+        accion,
+        descripcion
+    ))
+
+
+# ============================================================
+# VACANTES
+# ============================================================
+
+def crear_vacante(
+    titulo,
+    area,
+    descripcion="",
+    formacion="",
+    experiencia="",
+    habilidades="",
+    otros_criterios=""
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO vacantes (
+            titulo,
+            area,
+            descripcion,
+            formacion,
+            experiencia,
+            habilidades,
+            otros_criterios,
+            estado
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'Abierta')
+    """, (
+        _normalizar(titulo),
+        _normalizar(area),
+        _normalizar(descripcion),
+        _normalizar(formacion),
+        _normalizar(experiencia),
+        _normalizar(habilidades),
+        _normalizar(otros_criterios)
+    ))
+
+    vacante_id = cursor.lastrowid
+
+    _registrar_historial(
+        cursor,
+        "vacante",
+        vacante_id,
+        "creacion",
+        f"Vacante creada: {_normalizar(titulo)}"
+    )
+
+    conn.commit()
+    conn.close()
+
+    return vacante_id
+
+
+def obtener_vacantes():
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM vacantes
+        ORDER BY fecha_creacion DESC
+    """)
+
+    resultado = cursor.fetchall()
+
+    conn.close()
+
+    return resultado
+
+
+def obtener_vacantes_abiertas():
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM vacantes
+        WHERE estado = 'Abierta'
+        ORDER BY fecha_creacion DESC
+    """)
+
+    resultado = cursor.fetchall()
+
+    conn.close()
+
+    return resultado
+
+
+def obtener_vacantes_cerradas():
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM vacantes
+        WHERE estado = 'Cerrada'
+        ORDER BY fecha_cierre DESC
+    """)
+
+    resultado = cursor.fetchall()
+
+    conn.close()
+
+    return resultado
+
+
+def obtener_vacante(vacante_id):
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM vacantes
+        WHERE id = ?
+    """, (vacante_id,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def actualizar_vacante(
+    vacante_id,
+    titulo,
+    area,
+    descripcion,
+    formacion,
+    experiencia,
+    habilidades,
+    otros_criterios
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE vacantes
+        SET
+            titulo = ?,
+            area = ?,
+            descripcion = ?,
+            formacion = ?,
+            experiencia = ?,
+            habilidades = ?,
+            otros_criterios = ?,
+            fecha_actualizacion = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (
+        _normalizar(titulo),
+        _normalizar(area),
+        _normalizar(descripcion),
+        _normalizar(formacion),
+        _normalizar(experiencia),
+        _normalizar(habilidades),
+        _normalizar(otros_criterios),
+        vacante_id
+    ))
+
+    _registrar_historial(
+        cursor,
+        "vacante",
+        vacante_id,
+        "edicion",
+        f"Vacante actualizada: {_normalizar(titulo)}"
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def cambiar_estado_vacante(vacante_id, nuevo_estado):
+    """
+    Estados permitidos:
+    - Abierta
+    - Cerrada
+    """
+
+    nuevo_estado = _normalizar(nuevo_estado)
+
+    if nuevo_estado not in ("Abierta", "Cerrada"):
+        raise ValueError(
+            "El estado de la vacante debe ser 'Abierta' o 'Cerrada'."
+        )
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    if nuevo_estado == "Cerrada":
+        cursor.execute("""
+            UPDATE vacantes
+            SET
+                estado = 'Cerrada',
+                fecha_cierre = CURRENT_TIMESTAMP,
+                fecha_actualizacion = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (vacante_id,))
+
+        accion = "cierre"
+
+    else:
+        cursor.execute("""
+            UPDATE vacantes
+            SET
+                estado = 'Abierta',
+                fecha_cierre = NULL,
+                fecha_actualizacion = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (vacante_id,))
+
+        accion = "apertura"
+
+    _registrar_historial(
+        cursor,
+        "vacante",
+        vacante_id,
+        accion,
+        f"Vacante cambiada a estado: {nuevo_estado}"
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_vacante(vacante_id):
+    """
+    Elimina una vacante y sus datos relacionados.
+
+    IMPORTANTE:
+    Esta función debe utilizarse únicamente cuando TTHH
+    confirme explícitamente la eliminación.
+    """
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    vacante = cursor.execute("""
+        SELECT titulo
+        FROM vacantes
+        WHERE id = ?
+    """, (vacante_id,)).fetchone()
+
+    titulo = vacante["titulo"] if vacante else "Vacante"
+
+    # Eliminar en orden para respetar Foreign Keys en SQLite
+    cursor.execute("DELETE FROM analisis WHERE vacante_id = ?", (vacante_id,))
+    cursor.execute("DELETE FROM documentos WHERE postulacion_id IN (SELECT id FROM postulaciones WHERE vacante_id = ?)", (vacante_id,))
+    cursor.execute("DELETE FROM postulaciones WHERE vacante_id = ?", (vacante_id,))
+    cursor.execute("UPDATE candidatos SET vacante_id = NULL WHERE vacante_id = ?", (vacante_id,))
+
+    cursor.execute("""
+        DELETE FROM vacantes
+        WHERE id = ?
+    """, (vacante_id,))
+
+    _registrar_historial(
+        cursor,
+        "vacante",
+        vacante_id,
+        "eliminacion",
+        f"Vacante eliminada: {titulo}"
+    )
+
+    conn.commit()
+    conn.close()
+
+    return True
+
+
+# ============================================================
+# CANDIDATOS
+# ============================================================
+
+def obtener_candidato(candidato_id):
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM candidatos
+        WHERE id = ?
+    """, (candidato_id,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def buscar_candidato_por_documento(documento):
+    documento = _normalizar_documento(documento)
+
+    if not documento:
+        return None
+
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM candidatos
+        WHERE documento = ?
+        LIMIT 1
+    """, (documento,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def buscar_candidato_por_email(email):
+    email = _normalizar_email(email)
+
+    if not email:
+        return None
+
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM candidatos
+        WHERE LOWER(email) = ?
+        LIMIT 1
+    """, (email,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def buscar_candidato(
+    documento="",
+    email="",
+    nombre=""
+):
+    """
+    Busca un candidato utilizando la prioridad:
+
+    1. Documento
+    2. Email
+    3. Nombre
+
+    El documento NO es obligatorio.
+    """
+
+    documento = _normalizar_documento(documento)
+    email = _normalizar_email(email)
+    nombre = _normalizar(nombre)
+
+    conn = obtener_conexion()
+
+    resultado = None
+
+    if documento:
+        resultado = conn.execute("""
+            SELECT *
+            FROM candidatos
+            WHERE documento = ?
+            LIMIT 1
+        """, (documento,)).fetchone()
+
+    if resultado is None and email:
+        resultado = conn.execute("""
+            SELECT *
+            FROM candidatos
+            WHERE LOWER(email) = ?
+            LIMIT 1
+        """, (email,)).fetchone()
+
+    if resultado is None and nombre:
+        resultado = conn.execute("""
+            SELECT *
+            FROM candidatos
+            WHERE LOWER(nombre) = LOWER(?)
+            LIMIT 1
+        """, (nombre,)).fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def crear_candidato(
+    nombre,
+    documento="",
+    telefono="",
+    email="",
+    formacion="",
+    experiencia="",
+    habilidades=""
+):
+    """
+    Crea un candidato independiente de la vacante.
+
+    El documento es opcional.
+    """
+
+    nombre = _normalizar(nombre)
+
+    if not nombre:
+        raise ValueError("El nombre del candidato es obligatorio.")
+
+    documento = _normalizar_documento(documento)
+    telefono = _normalizar(telefono)
+    email = _normalizar_email(email)
+    formacion = _normalizar(formacion)
+    experiencia = _normalizar(experiencia)
+    habilidades = _normalizar(habilidades)
+
+    # Buscar candidato existente.
+    existente = buscar_candidato(
+        documento=documento,
+        email=email
+    )
+
+    if existente:
+        return existente["id"]
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO candidatos (
+            nombre,
+            documento,
+            telefono,
+            email,
+            formacion,
+            experiencia,
+            habilidades
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        nombre,
+        documento,
+        telefono,
+        email,
+        formacion,
+        experiencia,
+        habilidades
+    ))
+
+    candidato_id = cursor.lastrowid
+
+    _registrar_historial(
+        cursor,
+        "candidato",
+        candidato_id,
+        "creacion",
+        f"Candidato creado: {nombre}"
+    )
+
+    conn.commit()
+    conn.close()
+
+    return candidato_id
+
+
+def actualizar_candidato(
+    candidato_id,
+    nombre,
+    documento="",
+    telefono="",
+    email="",
+    formacion="",
+    experiencia="",
+    habilidades=""
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE candidatos
+        SET
+            nombre = ?,
+            documento = ?,
+            telefono = ?,
+            email = ?,
+            formacion = ?,
+            experiencia = ?,
+            habilidades = ?,
+            fecha_actualizacion = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (
+        _normalizar(nombre),
+        _normalizar_documento(documento),
+        _normalizar(telefono),
+        _normalizar_email(email),
+        _normalizar(formacion),
+        _normalizar(experiencia),
+        _normalizar(habilidades),
+        candidato_id
+    ))
+
+    _registrar_historial(
+        cursor,
+        "candidato",
+        candidato_id,
+        "edicion",
+        f"Candidato actualizado: {_normalizar(nombre)}"
+    )
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# POSTULACIONES
+# ============================================================
+
+def crear_postulacion(
+    candidato_id,
+    vacante_id,
+    fuente="Manual",
+    archivo_nombre="",
+    archivo_ruta="",
+    archivo_tipo="",
+    texto_hv=""
+):
+    """
+    Crea una postulación.
+
+    Un mismo candidato no puede tener dos postulaciones
+    idénticas para la misma vacante.
+    """
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    existente = cursor.execute("""
+        SELECT *
+        FROM postulaciones
+        WHERE candidato_id = ?
+        AND vacante_id = ?
+    """, (
+        candidato_id,
+        vacante_id
+    )).fetchone()
+
+    if existente:
+        conn.close()
+        return existente["id"]
+
+    cursor.execute("""
+        INSERT INTO postulaciones (
+            candidato_id,
+            vacante_id,
+            fuente,
+            estado,
+            archivo_nombre,
+            archivo_ruta,
+            archivo_tipo,
+            texto_hv
+        )
+        VALUES (?, ?, ?, 'Pendiente', ?, ?, ?, ?)
+    """, (
+        candidato_id,
+        vacante_id,
+        _normalizar(fuente),
+        _normalizar(archivo_nombre),
+        _normalizar(archivo_ruta),
+        _normalizar(archivo_tipo),
+        texto_hv or ""
+    ))
+
+    postulacion_id = cursor.lastrowid
+
+    _registrar_historial(
+        cursor,
+        "postulacion",
+        postulacion_id,
+        "creacion",
+        f"Postulación creada para vacante {vacante_id}"
+    )
+
+    conn.commit()
+    conn.close()
+
+    return postulacion_id
+
+
+def obtener_postulacion(postulacion_id):
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT
+            p.*,
+            c.nombre,
+            c.documento,
+            c.telefono,
+            c.email,
+            v.titulo AS vacante_titulo,
+            v.area AS vacante_area
+        FROM postulaciones p
+        JOIN candidatos c
+            ON c.id = p.candidato_id
+        JOIN vacantes v
+            ON v.id = p.vacante_id
+        WHERE p.id = ?
+    """, (postulacion_id,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def obtener_postulaciones(vacante_id=None):
+    """
+    Obtiene todas las postulaciones o las filtra por vacante_id.
+    Incluye datos del candidato, vacante y análisis IA asociado.
+    """
+    conn = obtener_conexion()
+
+    query = """
+        SELECT
+            p.*,
+            c.nombre,
+            c.documento,
+            c.telefono,
+            c.email,
+            v.titulo AS vacante_titulo,
+            v.area AS vacante_area,
+            a.id AS analisis_id,
+            a.puntaje_total,
+            a.decision,
+            a.resumen_ejecutivo,
+            a.cumplimiento_json,
+            a.alertas_json,
+            a.fecha_analisis
+        FROM postulaciones p
+        JOIN candidatos c
+            ON c.id = p.candidato_id
+        JOIN vacantes v
+            ON v.id = p.vacante_id
+        LEFT JOIN analisis a
+            ON a.id = (
+                SELECT MAX(a2.id)
+                FROM analisis a2
+                WHERE a2.postulacion_id = p.id
+                  AND COALESCE(a2.estado, 'Completado') <> 'Error'
+            )
+    """
+    params = ()
+    if vacante_id:
+        query += " WHERE p.vacante_id = ?"
+        params = (vacante_id,)
+
+    query += """
+        ORDER BY
+            CASE
+                WHEN a.puntaje_total IS NULL THEN 1
+                ELSE 0
+            END,
+            a.puntaje_total DESC,
+            p.fecha_postulacion DESC
+    """
+
+    cursor = conn.execute(query, params)
+    resultado = cursor.fetchall()
+    conn.close()
+    return resultado
+
+
+def obtener_postulaciones_por_vacante(vacante_id):
+    return obtener_postulaciones(vacante_id=vacante_id)
+
+
+def obtener_postulaciones_por_candidato(candidato_id):
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT
+            p.*,
+            v.titulo AS vacante_titulo,
+            v.area AS vacante_area,
+            v.estado AS vacante_estado,
+            a.puntaje_total,
+            a.decision,
+            a.fecha_analisis
+        FROM postulaciones p
+
+        JOIN vacantes v
+            ON v.id = p.vacante_id
+
+        LEFT JOIN analisis a
+            ON a.id = (
+                SELECT MAX(a2.id)
+                FROM analisis a2
+                WHERE a2.postulacion_id = p.id
+                  AND COALESCE(a2.estado, 'Completado') <> 'Error'
+            )
+
+        WHERE p.candidato_id = ?
+
+        ORDER BY p.fecha_postulacion DESC
+    """, (candidato_id,))
+
+    resultado = cursor.fetchall()
+
+    conn.close()
+
+    return resultado
+
+
+def actualizar_estado_postulacion(
+    postulacion_id,
+    nuevo_estado
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE postulaciones
+        SET
+            estado = ?,
+            fecha_actualizacion = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (
+        _normalizar(nuevo_estado),
+        postulacion_id
+    ))
+
+    _registrar_historial(
+        cursor,
+        "postulacion",
+        postulacion_id,
+        "cambio_estado",
+        f"Nuevo estado: {nuevo_estado}"
+    )
+
+    conn.commit()
+    conn.close()
+
+
+def eliminar_postulacion(postulacion_id):
+    """
+    Elimina una postulación y sus análisis/documentos asociados.
+    Si el candidato no cuenta con más postulaciones, lo elimina también de candidatos.
+    """
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    row = cursor.execute(
+        "SELECT candidato_id FROM postulaciones WHERE id = ?",
+        (postulacion_id,)
+    ).fetchone()
+    candidato_id = row["candidato_id"] if row else None
+
+    cursor.execute("DELETE FROM analisis WHERE postulacion_id = ?", (postulacion_id,))
+    cursor.execute("DELETE FROM documentos WHERE postulacion_id = ?", (postulacion_id,))
+    cursor.execute("DELETE FROM postulaciones WHERE id = ?", (postulacion_id,))
+
+    if candidato_id:
+        otras = cursor.execute(
+            "SELECT COUNT(*) FROM postulaciones WHERE candidato_id = ?",
+            (candidato_id,)
+        ).fetchone()[0]
+        if otras == 0:
+            cursor.execute("DELETE FROM candidatos WHERE id = ?", (candidato_id,))
+            _registrar_historial(
+                cursor,
+                "candidato",
+                candidato_id,
+                "eliminacion",
+                f"Candidato {candidato_id} eliminado al no tener postulaciones activas"
+            )
+
+    _registrar_historial(
+        cursor,
+        "postulacion",
+        postulacion_id,
+        "eliminacion",
+        f"Postulación {postulacion_id} eliminada"
+    )
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+def eliminar_candidato(candidato_id):
+    """
+    Elimina completamente a un candidato y todas sus postulaciones, análisis y documentos.
+    """
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("DELETE FROM analisis WHERE candidato_id = ?", (candidato_id,))
+    cursor.execute("DELETE FROM documentos WHERE candidato_id = ?", (candidato_id,))
+    cursor.execute("DELETE FROM postulaciones WHERE candidato_id = ?", (candidato_id,))
+    cursor.execute("DELETE FROM candidatos WHERE id = ?", (candidato_id,))
+
+    _registrar_historial(
+        cursor,
+        "candidato",
+        candidato_id,
+        "eliminacion",
+        f"Candidato {candidato_id} eliminado con todas sus dependencias"
+    )
+
+    conn.commit()
+    conn.close()
+    return True
+
+
+# ============================================================
+# DOCUMENTOS / HOJAS DE VIDA
+# ============================================================
+
+def registrar_documento(
+    postulacion_id,
+    candidato_id,
+    nombre_archivo,
+    ruta_archivo="",
+    tipo_archivo="",
+    origen="Carga masiva"
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO documentos (
+            postulacion_id,
+            candidato_id,
+            nombre_archivo,
+            ruta_archivo,
+            tipo_archivo,
+            origen,
+            estado_procesamiento
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 'Pendiente')
+    """, (
+        postulacion_id,
+        candidato_id,
+        _normalizar(nombre_archivo),
+        _normalizar(ruta_archivo),
+        _normalizar(tipo_archivo),
+        _normalizar(origen)
+    ))
+
+    documento_id = cursor.lastrowid
+
+    conn.commit()
+    conn.close()
+
+    return documento_id
+
+
+def actualizar_estado_documento(
+    documento_id,
+    estado,
+    error=""
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    if estado == "Procesado":
+        cursor.execute("""
+            UPDATE documentos
+            SET
+                estado_procesamiento = ?,
+                error = ?,
+                fecha_procesamiento = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (
+            estado,
+            _normalizar(error),
+            documento_id
+        ))
+
+    else:
+        cursor.execute("""
+            UPDATE documentos
+            SET
+                estado_procesamiento = ?,
+                error = ?
+            WHERE id = ?
+        """, (
+            estado,
+            _normalizar(error),
+            documento_id
+        ))
+
+    conn.commit()
+    conn.close()
+
+
+def obtener_documentos_pendientes():
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM documentos
+        WHERE estado_procesamiento = 'Pendiente'
+        ORDER BY fecha_recepcion ASC
+    """)
+
+    resultado = cursor.fetchall()
+
+    conn.close()
+
+    return resultado
+
+
+# ============================================================
+# ANÁLISIS IA
+# ============================================================
+
+def guardar_analisis(
+    candidato_id,
+    vacante_id,
+    puntaje_total,
+    decision,
+    resumen_ejecutivo,
+    cumplimiento_json,
+    alertas,
+    postulacion_id=None,
+    modelo_ia="openai/gpt-oss-20b"
+):
+    """
+    Guarda un nuevo análisis IA.
+
+    El análisis pertenece a una postulación.
+    """
+
+    try:
+        puntaje_total = int(puntaje_total)
+    except (TypeError, ValueError):
+        puntaje_total = 0
+
+    puntaje_total = max(0, min(100, puntaje_total))
+
+    if isinstance(cumplimiento_json, (dict, list)):
+        cumplimiento_json = json.dumps(
+            cumplimiento_json,
+            ensure_ascii=False
+        )
+
+    if isinstance(alertas, list):
+        alertas = json.dumps(
+            alertas,
+            ensure_ascii=False
+        )
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO analisis (
+            postulacion_id,
+            candidato_id,
+            vacante_id,
+            puntaje_total,
+            decision,
+            resumen_ejecutivo,
+            cumplimiento_json,
+            alertas_json,
+            modelo_ia,
+            estado
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Completado')
+    """, (
+        postulacion_id,
+        candidato_id,
+        vacante_id,
+        puntaje_total,
+        _normalizar(decision),
+        _normalizar(resumen_ejecutivo),
+        cumplimiento_json or "{}",
+        alertas or "[]",
+        _normalizar(modelo_ia)
+    ))
+
+    analisis_id = cursor.lastrowid
+
+    if postulacion_id:
+        cursor.execute("""
+            UPDATE postulaciones
+            SET
+                estado = 'Analizado',
+                fecha_actualizacion = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (postulacion_id,))
+
+    _registrar_historial(
+        cursor,
+        "analisis",
+        analisis_id,
+        "analisis_ia",
+        f"Análisis realizado. Puntaje: {puntaje_total}"
+    )
+
+    conn.commit()
+    conn.close()
+
+    return analisis_id
+
+
+def guardar_error_analisis(
+    candidato_id,
+    vacante_id,
+    error,
+    postulacion_id=None
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT INTO analisis (
+            postulacion_id,
+            candidato_id,
+            vacante_id,
+            estado,
+            error
+        )
+        VALUES (?, ?, ?, 'Error', ?)
+    """, (
+        postulacion_id,
+        candidato_id,
+        vacante_id,
+        _normalizar(error)
+    ))
+
+    analisis_id = cursor.lastrowid
+
+    if postulacion_id:
+        cursor.execute("""
+            UPDATE postulaciones
+            SET
+                estado = 'Error',
+                fecha_actualizacion = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (postulacion_id,))
+
+    conn.commit()
+    conn.close()
+
+    return analisis_id
+
+
+def obtener_analisis_candidato(candidato_id):
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM analisis
+        WHERE candidato_id = ?
+        ORDER BY fecha_analisis DESC
+        LIMIT 1
+    """, (candidato_id,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+def obtener_analisis_postulacion(postulacion_id):
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT *
+        FROM analisis
+        WHERE postulacion_id = ?
+        ORDER BY fecha_analisis DESC
+        LIMIT 1
+    """, (postulacion_id,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado
+
+
+# ============================================================
+# CORREO MICROSOFT 365
+# ============================================================
+
+def correo_ya_procesado(message_id):
+    if not message_id:
+        return False
+
+    conn = obtener_conexion()
+
+    cursor = conn.execute("""
+        SELECT id
+        FROM correos_procesados
+        WHERE message_id = ?
+        LIMIT 1
+    """, (message_id,))
+
+    resultado = cursor.fetchone()
+
+    conn.close()
+
+    return resultado is not None
+
+
+def registrar_correo_procesado(
+    message_id,
+    asunto="",
+    remitente="",
+    fecha_correo="",
+    cantidad_adjuntos=0,
+    estado="Procesado",
+    error=""
+):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        INSERT OR REPLACE INTO correos_procesados (
+            message_id,
+            asunto,
+            remitente,
+            fecha_correo,
+            cantidad_adjuntos,
+            estado,
+            error
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        message_id,
+        _normalizar(asunto),
+        _normalizar(remitente),
+        _normalizar(fecha_correo),
+        cantidad_adjuntos,
+        _normalizar(estado),
+        _normalizar(error)
+    ))
+
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# HISTORIAL
+# ============================================================
+
+def obtener_historial(
+    entidad=None,
+    entidad_id=None,
+    limite=200
+):
+    conn = obtener_conexion()
+
+    query = """
+        SELECT *
+        FROM historial
+        WHERE 1 = 1
+    """
+
+    parametros = []
+
+    if entidad:
+        query += " AND entidad = ?"
+        parametros.append(entidad)
+
+    if entidad_id is not None:
+        query += " AND entidad_id = ?"
+        parametros.append(entidad_id)
+
+    query += """
+        ORDER BY fecha DESC
+        LIMIT ?
+    """
+
+    parametros.append(limite)
+
+    cursor = conn.execute(query, parametros)
+
+    resultado = cursor.fetchall()
+
+    conn.close()
+
+    return resultado
+
+
+# ============================================================
+# DASHBOARD
+# ============================================================
+
+def obtener_metricas_dashboard():
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    vacantes_abiertas = cursor.execute("""
+        SELECT COUNT(*)
+        FROM vacantes
+        WHERE estado = 'Abierta'
+    """).fetchone()[0]
+
+    total_candidatos = cursor.execute("""
+        SELECT COUNT(*)
+        FROM candidatos
+    """).fetchone()[0]
+
+    total_postulaciones = cursor.execute("""
+        SELECT COUNT(*)
+        FROM postulaciones
+    """).fetchone()[0]
+
+    analisis_realizados = cursor.execute("""
+        SELECT COUNT(*)
+        FROM analisis
+        WHERE estado = 'Completado'
+    """).fetchone()[0]
+
+    pendientes = cursor.execute("""
+        SELECT COUNT(*)
+        FROM postulaciones
+        WHERE estado = 'Pendiente'
+    """).fetchone()[0]
+
+    requieren_revision = cursor.execute("""
+        SELECT COUNT(*)
+        FROM postulaciones
+        WHERE estado IN ('Error', 'Revisión')
+    """).fetchone()[0]
+
+    conn.close()
+
+    return {
+        "vacantes_abiertas": vacantes_abiertas,
+        "total_candidatos": total_candidatos,
+        "total_postulaciones": total_postulaciones,
+        "analisis_realizados": analisis_realizados,
+        "pendientes": pendientes,
+        "requieren_revision": requieren_revision
+    }
+
+
+# ============================================================
+# REPORTES
+# ============================================================
+
+def obtener_reporte_completo_excel(vacante_id=None):
+    conn = obtener_conexion()
+
+    query = """
+        SELECT
+            v.titulo AS Vacante,
+            v.area AS Area,
+
+            c.nombre AS Candidato,
+            c.documento AS Documento,
+            c.email AS Correo,
+            c.telefono AS Telefono,
+
+            p.fuente AS Fuente,
+            p.estado AS Estado_Postulacion,
+            p.fecha_postulacion AS Fecha_Postulacion,
+
+            a.puntaje_total AS Puntaje_IA,
+            a.decision AS Decision_IA,
+            a.resumen_ejecutivo AS Resumen_Evaluacion,
+            a.alertas_json AS Alertas_Detectadas,
+            a.fecha_analisis AS Fecha_Evaluacion
+
+        FROM postulaciones p
+
+        JOIN candidatos c
+            ON c.id = p.candidato_id
+
+        JOIN vacantes v
+            ON v.id = p.vacante_id
+
+        LEFT JOIN analisis a
+            ON a.id = (
+                SELECT MAX(a2.id)
+                FROM analisis a2
+                WHERE a2.postulacion_id = p.id
+                  AND COALESCE(a2.estado, 'Completado') <> 'Error'
+            )
+    """
+
+    parametros = []
+
+    if vacante_id is not None:
+        query += " WHERE p.vacante_id = ?"
+        parametros.append(vacante_id)
+
+    query += """
+        ORDER BY
+            CASE
+                WHEN a.puntaje_total IS NULL THEN 1
+                ELSE 0
+            END,
+            a.puntaje_total DESC
+    """
+
+    df = pd.read_sql_query(
+        query,
+        conn,
+        params=parametros
+    )
+
+    conn.close()
+
+    return df
+
+
+# ============================================================
+# INICIALIZAR AUTOMÁTICAMENTE
+# ============================================================
+
+inicializar_db()
