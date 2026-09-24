@@ -30,11 +30,11 @@ NIVEL_PARCIAL = 40        # 40-69  -> Parcial, < 40 -> No cumple
 
 # Ponderación estándar cuando la vacante no define porcentajes
 CRITERIOS_ESTANDAR = [
-    ("experiencia", "Experiencia laboral", 30),
-    ("formacion", "Formación académica", 25),
-    ("habilidades_tecnicas", "Habilidades técnicas / software", 25),
+    ("experiencia", "Experiencia laboral", 35),
+    ("portafolio", "Portafolio / Proyectos", 20),
+    ("habilidades_tecnicas", "Habilidades técnicas / software", 20),
+    ("formacion", "Formación académica", 15),
     ("habilidades_blandas", "Habilidades blandas", 10),
-    ("portafolio", "Portafolio / Proyectos", 10),
 ]
 
 # Equivalencia para análisis antiguos que solo guardaron "Cumple/Parcial/No cumple"

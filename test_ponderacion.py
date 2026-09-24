@@ -55,7 +55,7 @@ def test_ponderaciones_que_no_suman_100_se_reescalan():
 def test_sin_porcentajes_usa_estandar():
     p = pd_.obtener_ponderaciones("Pruebas automáticas")
     assert [c["clave"] for c in p] == [
-        "experiencia", "formacion", "habilidades_tecnicas", "habilidades_blandas", "portafolio"
+        "experiencia", "portafolio", "habilidades_tecnicas", "formacion", "habilidades_blandas"
     ]
     assert sum(c["peso"] for c in p) == 100
 
