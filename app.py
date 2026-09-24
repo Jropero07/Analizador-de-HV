@@ -25,10 +25,14 @@ def _leer_secreto(nombre, defecto=""):
 @st.cache_resource(show_spinner=False)
 def _iniciar_db():
     database.inicializar_db()
+    _usuario_semilla = _leer_secreto("APP_USER", "admin")
     if not database.hay_usuarios_registrados():
-        _usuario_semilla = _leer_secreto("APP_USER", "admin")
         _clave_semilla = _leer_secreto("APP_PASSWORD", "admin")
-        database.crear_usuario(_usuario_semilla, "Administrador", _clave_semilla, "admin")
+        database.crear_usuario(_usuario_semilla, "Administrador", _clave_semilla, "super_admin")
+    else:
+        # Autocorrección: la cuenta definida en Secrets siempre debe quedar
+        # como Súper administrador, aunque algo la haya dejado con otro rol.
+        database.asegurar_super_admin(_usuario_semilla)
 
 
 _iniciar_db()

@@ -1503,7 +1503,8 @@ def crear_usuario(usuario, nombre, password, rol="lector", permisos=None):
     se guardan los permisos indicados casilla por casilla.
     """
     usuario = _normalizar(usuario)
-    rol = rol if rol in ROLES_VALIDOS else "lector"
+    if rol not in ROLES_VALIDOS:
+        rol = "super_admin" if rol == "admin" else "lector"
     if not usuario or not password:
         raise ValueError("El usuario y la contraseña son obligatorios.")
 
@@ -1563,6 +1564,23 @@ def obtener_usuarios():
     for f in filas:
         f["permisos"] = _permisos_de_fila(f)
     return filas
+
+
+def asegurar_super_admin(usuario):
+    """
+    Garantiza que el usuario de arranque (el definido en APP_USER/APP_PASSWORD)
+    sea siempre Súper administrador con todos los permisos, sin importar lo que
+    tenga guardado. Se llama en cada arranque para que esa cuenta nunca quede
+    atrapada con un rol inválido o degradado. No hace nada si ese usuario no existe.
+    """
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE usuarios SET rol = 'super_admin', permisos = ?, activo = 1 WHERE usuario = ?",
+        (json.dumps(PERMISOS_PRESET["super_admin"]), _normalizar(usuario))
+    )
+    conn.commit()
+    conn.close()
 
 
 def hay_usuarios_registrados():
