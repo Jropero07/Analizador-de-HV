@@ -238,6 +238,48 @@ RESPONDE ÚNICAMENTE EN JSON VÁLIDO CON ESTA ESTRUCTURA:
         }
 
 
+def resumir_hoja_de_vida(texto_crudo, longitud_maxima=6000):
+    """
+    Convierte el texto crudo extraído de una Hoja de Vida (con saltos y ruido
+    del PDF/Word) en un resumen profesional legible, sin inventar información.
+
+    No es un resumen "corto": conserva experiencia, formación, habilidades y
+    logros para que el análisis con IA siga teniendo suficiente detalle.
+    Si la IA falla, devuelve el texto original para no bloquear el registro.
+    """
+    texto_crudo = (texto_crudo or "").strip()
+    if not texto_crudo:
+        return texto_crudo
+
+    prompt = f"""
+Reescribe la siguiente Hoja de Vida como un resumen profesional, claro y
+bien organizado en español. No es un extracto literal: reformula el texto
+con tus propias palabras, en párrafos o viñetas cortas.
+
+Reglas:
+- No inventes datos que no estén en el texto.
+- Conserva todos los datos relevantes para evaluar al candidato: experiencia
+  laboral (cargos, empresas, tiempo, logros), formación académica, habilidades
+  técnicas y blandas, certificaciones e idiomas.
+- Incluye nombre, documento, teléfono y correo si aparecen, tal como están.
+- Omite membretes, numeración de páginas y demás ruido del documento original.
+- Responde solo con el resumen, sin comentarios ni encabezados adicionales.
+
+HOJA DE VIDA (texto extraído, puede tener errores de formato):
+
+{texto_crudo[:12000]}
+"""
+
+    try:
+        resumen = peticion_groq_directa(prompt, temperature=0.2)
+        resumen = (resumen or "").strip()
+        if not resumen:
+            return texto_crudo
+        return resumen[:longitud_maxima]
+    except Exception:
+        return texto_crudo
+
+
 def _construir_prompt_analisis(vacante_data, candidato_texto, ponderaciones):
     """Arma el prompt: la IA solo puntúa cada criterio; el total lo calcula Python."""
 

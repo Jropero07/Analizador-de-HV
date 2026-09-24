@@ -8,7 +8,7 @@ import streamlit as st
 import pandas as pd
 import database
 import parser
-from ai_engine import extraer_datos_candidato, analizar_candidato_vs_vacante
+from ai_engine import extraer_datos_candidato, analizar_candidato_vs_vacante, resumir_hoja_de_vida
 from ponderacion import generar_tabla_ponderacion_html
 from informe_pdf import generar_informe_pdf
 
@@ -463,6 +463,12 @@ if 'buffer_contacto' not in st.session_state:
 if 'texto_cv' not in st.session_state:
     st.session_state.texto_cv = ""
 
+if 'texto_cv_original' not in st.session_state:
+    st.session_state.texto_cv_original = ""
+
+if 'uploader_nonce' not in st.session_state:
+    st.session_state.uploader_nonce = 0
+
 if 'ultimo_archivo' not in st.session_state:
     st.session_state.ultimo_archivo = None
 
@@ -619,13 +625,18 @@ with st.sidebar:
 # =============================================================================
 if opcion == "Candidatos":
     # 1. Cabecera y Buscador
-    c_head1, c_head2 = st.columns([3, 2])
+    c_head1, c_head2, c_head3 = st.columns([3, 1.6, 1.6])
     with c_head1:
         st.markdown('<div class="top-breadcrumb">SISTEMA DE TALENTO HUMANO</div>', unsafe_allow_html=True)
         st.markdown('<div class="top-title">Gestión de Selección de Personal</div>', unsafe_allow_html=True)
     with c_head2:
         st.markdown("<br>", unsafe_allow_html=True)
         busqueda = st.text_input("Buscar:", placeholder="Buscar por nombre, cargo o correo...", label_visibility="collapsed")
+    with c_head3:
+        st.markdown("<br>", unsafe_allow_html=True)
+        _vacs_filtro = [dict(v) for v in database.obtener_vacantes()]
+        _opciones_filtro = ["Todas las vacantes"] + [f"#{v['id']} - {v['titulo']} ({v['area']})" for v in _vacs_filtro]
+        vac_sel_filtro = st.selectbox("Filtrar por vacante:", _opciones_filtro, label_visibility="collapsed")
 
     # 2. Fila de Tarjetas de Métricas (KPI Cards como en la imagen)
     metricas = database.obtener_metricas_dashboard()
@@ -678,25 +689,33 @@ if opcion == "Candidatos":
                 adjunto = st.file_uploader(
                     "Cargar Hoja de Vida (PDF, DOCX, TXT):",
                     type=["pdf", "docx", "txt"],
-                    key="uploader_cv_main"
+                    key=f"uploader_cv_main_{st.session_state.uploader_nonce}"
                 )
-                if adjunto is not None:
+                if adjunto is not None and st.session_state.get("ultimo_archivo", {}).get("nombre_original") != adjunto.name:
                     nombre_archivo, ruta_archivo = parser.guardar_archivo_subido(adjunto)
                     st.session_state.ultimo_archivo = {
                         "nombre": nombre_archivo,
+                        "nombre_original": adjunto.name,
                         "ruta": ruta_archivo,
                         "tipo": os.path.splitext(nombre_archivo)[1].lower()
                     }
-                    st.session_state.texto_cv = parser.procesar_documento(adjunto, nombre_archivo=adjunto.name)
+                    texto_extraido = parser.procesar_documento(adjunto, nombre_archivo=adjunto.name)
+                    st.session_state.texto_cv_original = texto_extraido
+                    if texto_extraido.strip():
+                        with st.spinner("Generando resumen de la Hoja de Vida..."):
+                            st.session_state.texto_cv = resumir_hoja_de_vida(texto_extraido)
+                    else:
+                        st.session_state.texto_cv = texto_extraido
 
             with col_up2:
                 st.markdown("<br>", unsafe_allow_html=True)
                 if st.button("Extraer Datos con IA", use_container_width=True, help="Extrae automáticamente los datos de contacto desde el texto"):
-                    if not st.session_state.texto_cv.strip():
+                    _texto_para_extraer = st.session_state.texto_cv_original.strip() or st.session_state.texto_cv.strip()
+                    if not _texto_para_extraer:
                         st.warning("Adjunte un archivo o ingrese el texto de la HV primero.")
                     else:
                         with st.spinner("Extrayendo datos de contacto..."):
-                            dc = extraer_datos_candidato(st.session_state.texto_cv)
+                            dc = extraer_datos_candidato(_texto_para_extraer)
                             if "error" in dc:
                                 st.error(dc["error"])
                             else:
@@ -737,7 +756,9 @@ if opcion == "Candidatos":
                 if st.button("Limpiar Formulario", use_container_width=True):
                     st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
                     st.session_state.texto_cv = ""
+                    st.session_state.texto_cv_original = ""
                     st.session_state.ultimo_archivo = None
+                    st.session_state.uploader_nonce += 1
                     st.rerun()
 
             with col_btn_r2:
@@ -806,10 +827,12 @@ if opcion == "Candidatos":
                         st.session_state.ver_analisis_id = postulacion_id
                         st.toast("Candidato guardado y analizado exitosamente", icon="✔")
 
-                    # Limpiar buffers
+                    # Limpiar formulario por completo, incluido el archivo cargado
                     st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
                     st.session_state.texto_cv = ""
+                    st.session_state.texto_cv_original = ""
                     st.session_state.ultimo_archivo = None
+                    st.session_state.uploader_nonce += 1
                     st.rerun()
 
         # 4b. CARGA MASIVA DE HOJAS DE VIDA
@@ -1030,7 +1053,11 @@ if opcion == "Candidatos":
     st.markdown("---")
     st.markdown("##### Listado de Postulaciones y Candidatos")
 
-    postulaciones = [dict(p) for p in database.obtener_postulaciones()]
+    vacante_id_filtro = None
+    if vac_sel_filtro != "Todas las vacantes":
+        vacante_id_filtro = int(vac_sel_filtro.split(" - ")[0].replace("#", "").strip())
+
+    postulaciones = [dict(p) for p in database.obtener_postulaciones(vacante_id=vacante_id_filtro)]
 
     # Filtro de búsqueda
     if busqueda.strip():
@@ -1044,7 +1071,7 @@ if opcion == "Candidatos":
         ]
 
     if not postulaciones:
-        st.info("No hay postulaciones registradas que coincidan con la búsqueda.")
+        st.info("No hay postulaciones registradas para la vacante y búsqueda seleccionadas.")
     else:
         # Cabecera de la tabla
         st.markdown("""
