@@ -1423,7 +1423,9 @@ elif opcion == "Usuarios":
         st.markdown("##### Usuarios Registrados")
 
         for u in database.obtener_usuarios():
-            c_u1, c_u2, c_u3, c_u4 = st.columns([2.5, 2.2, 1.3, 1.3])
+            es_yo_mismo = u["id"] == st.session_state.get("usuario_id")
+
+            c_u1, c_u2, c_u3, c_u4 = st.columns([2.5, 2.2, 1.3, 1.8])
             with c_u1:
                 st.write(f"**{u['nombre']}**")
                 st.caption(f"Usuario: {u['usuario']}")
@@ -1435,17 +1437,70 @@ elif opcion == "Usuarios":
             with c_u3:
                 st.write("Activo" if u["activo"] else "Inactivo")
             with c_u4:
-                es_yo_mismo = u["id"] == st.session_state.get("usuario_id")
                 if es_yo_mismo:
                     st.caption("Sesión actual")
-                elif u["activo"]:
-                    if st.button("Desactivar", key=f"usr_desact_{u['id']}", use_container_width=True):
-                        database.alternar_estado_usuario(u["id"], False)
-                        st.rerun()
                 else:
-                    if st.button("Activar", key=f"usr_act_{u['id']}", use_container_width=True):
-                        database.alternar_estado_usuario(u["id"], True)
-                        st.rerun()
+                    c_e1, c_e2, c_e3 = st.columns(3)
+                    with c_e1:
+                        if u["activo"]:
+                            if st.button("Desactivar", key=f"usr_desact_{u['id']}", use_container_width=True):
+                                database.alternar_estado_usuario(u["id"], False)
+                                st.rerun()
+                        else:
+                            if st.button("Activar", key=f"usr_act_{u['id']}", use_container_width=True):
+                                database.alternar_estado_usuario(u["id"], True)
+                                st.rerun()
+                    with c_e2:
+                        if st.button("Editar", key=f"usr_edit_{u['id']}", use_container_width=True):
+                            st.session_state.editando_usuario_id = (
+                                None if st.session_state.get("editando_usuario_id") == u["id"] else u["id"]
+                            )
+                            st.rerun()
+                    with c_e3:
+                        if st.button("Eliminar", key=f"usr_del_{u['id']}", use_container_width=True):
+                            database.eliminar_usuario(u["id"])
+                            st.toast(f'Usuario "{u["usuario"]}" eliminado', icon="✔")
+                            st.rerun()
+
+            if not es_yo_mismo and st.session_state.get("editando_usuario_id") == u["id"]:
+                with st.container(border=True):
+                    st.caption(f"Editando el tipo de acceso de **{u['nombre']}**")
+                    ed_tipo = st.selectbox(
+                        "Tipo de acceso",
+                        ["super_admin", "control_total", "lector", "personalizado"],
+                        index=["super_admin", "control_total", "lector", "personalizado"].index(u["rol"]),
+                        format_func=lambda r: database.NOMBRES_ROL[r],
+                        key=f"edit_tipo_{u['id']}"
+                    )
+
+                    permisos_editados = None
+                    if ed_tipo == "personalizado":
+                        st.caption("Marque lo que este usuario podrá hacer:")
+                        ce1, ce2, ce3, ce4 = st.columns(4)
+                        with ce1:
+                            ep_cand = st.checkbox("Registrar candidatos", value=u["permisos"]["candidatos"], key=f"edit_cand_{u['id']}")
+                        with ce2:
+                            ep_proc = st.checkbox("Gestionar proceso", value=u["permisos"]["proceso"], key=f"edit_proc_{u['id']}")
+                        with ce3:
+                            ep_vac = st.checkbox("Gestionar vacantes", value=u["permisos"]["vacantes"], key=f"edit_vac_{u['id']}")
+                        with ce4:
+                            ep_usr = st.checkbox("Gestionar usuarios", value=u["permisos"]["usuarios"], key=f"edit_usr_{u['id']}")
+                        permisos_editados = {
+                            "candidatos": ep_cand, "proceso": ep_proc,
+                            "vacantes": ep_vac, "usuarios": ep_usr
+                        }
+
+                    cg1, cg2 = st.columns(2)
+                    with cg1:
+                        if st.button("Guardar cambios", key=f"edit_guardar_{u['id']}", type="primary", use_container_width=True):
+                            database.actualizar_rol_usuario(u["id"], ed_tipo, permisos_editados)
+                            st.session_state.editando_usuario_id = None
+                            st.toast("Tipo de acceso actualizado", icon="✔")
+                            st.rerun()
+                    with cg2:
+                        if st.button("Cancelar", key=f"edit_cancelar_{u['id']}", use_container_width=True):
+                            st.session_state.editando_usuario_id = None
+                            st.rerun()
 
 
 # =============================================================================

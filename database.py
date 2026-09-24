@@ -1600,6 +1600,22 @@ def alternar_estado_usuario(usuario_id, activo):
     conn.close()
 
 
+def actualizar_rol_usuario(usuario_id, rol, permisos=None):
+    """Cambia el tipo de acceso (y sus permisos) de un usuario ya creado."""
+    if rol not in ROLES_VALIDOS:
+        rol = "super_admin" if rol == "admin" else "lector"
+    permisos_finales = PERMISOS_PRESET[rol] if rol in PERMISOS_PRESET else _normalizar_permisos(permisos)
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE usuarios SET rol = ?, permisos = ? WHERE id = ?",
+        (rol, json.dumps(permisos_finales), usuario_id)
+    )
+    conn.commit()
+    conn.close()
+
+
 def eliminar_usuario(usuario_id):
     conn = obtener_conexion()
     cursor = conn.cursor()
