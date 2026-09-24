@@ -1,5 +1,6 @@
 import os
 import re
+import html
 import json
 import time
 import unicodedata
@@ -9,6 +10,7 @@ import database
 import parser
 from ai_engine import extraer_datos_candidato, analizar_candidato_vs_vacante
 from ponderacion import generar_tabla_ponderacion_html
+from informe_pdf import generar_informe_pdf
 
 # Inicializar Base de Datos SQLite al arrancar
 @st.cache_resource(show_spinner=False)
@@ -183,6 +185,53 @@ STYLING_ERP = """
     .sidebar-brand-sub {
         color: #64748B;
         font-size: 0.75rem;
+    }
+
+    .perfil-box {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 14px 8px 10px 8px;
+        margin-top: 6px;
+        border-top: 1px solid #E2E8F0;
+    }
+
+    .perfil-avatar {
+        width: 38px;
+        height: 38px;
+        border-radius: 50%;
+        background-color: #DBEAFE;
+        color: #1E3A8A;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 1rem;
+    }
+
+    .perfil-nombre {
+        display: block;
+        color: #0F172A;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+
+    .perfil-rol {
+        display: block;
+        color: #64748B;
+        font-size: 0.75rem;
+    }
+
+    [data-testid="stSidebar"] .st-key-btn_cerrar_sesion button {
+        background-color: #FEF2F2 !important;
+        border: 1px solid #FCA5A5 !important;
+        justify-content: center !important;
+    }
+
+    [data-testid="stSidebar"] .st-key-btn_cerrar_sesion button p {
+        color: #B91C1C !important;
+        font-weight: 600 !important;
+        text-align: center !important;
     }
 
     /* MENÚ LATERAL CON BOTONES (texto siempre visible) */
@@ -513,6 +562,22 @@ with st.sidebar:
 
     opcion = st.session_state.opcion_menu
     st.markdown("<br><br>", unsafe_allow_html=True)
+
+    if st.session_state.get("autenticado"):
+        _nombre_usuario = _leer_secreto("APP_USER", "admin")
+        st.markdown(f"""
+            <div class="perfil-box">
+                <div class="perfil-avatar">{html.escape(_nombre_usuario[:1].upper())}</div>
+                <div>
+                    <span class="perfil-nombre">{html.escape(_nombre_usuario)}</span>
+                    <span class="perfil-rol">Sesión activa</span>
+                </div>
+            </div>
+        """, unsafe_allow_html=True)
+        if st.button("Cerrar sesión", key="btn_cerrar_sesion", use_container_width=True):
+            st.session_state.clear()
+            st.rerun()
+
     st.caption("v2.1 — Asistente IA TTHH")
 
 
@@ -856,6 +921,20 @@ if opcion == "Candidatos":
                         database.actualizar_observacion_postulacion(p_sel["id"], obs_tthh)
                         st.toast("Observación guardada", icon="✔")
                         st.rerun()
+
+                    try:
+                        _autor = _leer_secreto("APP_USER", "") if st.session_state.get("autenticado") else ""
+                        _nombre_arch = re.sub(r"[^A-Za-z0-9]+", "_", unicodedata.normalize("NFKD", p_sel["nombre"]).encode("ascii", "ignore").decode()).strip("_") or "candidato"
+                        st.download_button(
+                            "Descargar informe en PDF",
+                            generar_informe_pdf(p_actual_analisis, vac_obj, obs_tthh, _autor),
+                            file_name=f"Informe_{_nombre_arch}.pdf",
+                            mime="application/pdf",
+                            key=f"pdf_informe_{p_sel['id']}",
+                            use_container_width=True
+                        )
+                    except Exception as e:
+                        st.warning(f"No se pudo generar el informe PDF: {e}")
 
                     st.markdown("---")
                     st.caption("Recalcula el puntaje con la ponderación actual de la vacante. No cambia el estado de la postulación.")
