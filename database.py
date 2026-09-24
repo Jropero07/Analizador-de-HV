@@ -1,6 +1,9 @@
 import os
 import re
 import time
+import hmac
+import hashlib
+import secrets
 import threading
 import sqlite3
 import json
@@ -593,6 +596,33 @@ def inicializar_db():
         "observaciones_tthh",
         "TEXT"
     )
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS usuarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            usuario TEXT NOT NULL UNIQUE,
+            nombre TEXT NOT NULL,
+            password_hash TEXT NOT NULL,
+            rol TEXT NOT NULL DEFAULT 'lector',
+            permisos TEXT,
+            activo INTEGER NOT NULL DEFAULT 1,
+            fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+    _agregar_columna_si_no_existe(cursor, "usuarios", "permisos", "TEXT")
+
+    # Usuarios creados antes de tener permisos por casilla: se les asigna el
+    # equivalente (el antiguo "admin" pasa a Súper administrador con todo).
+    cursor.execute("UPDATE usuarios SET rol = 'super_admin' WHERE rol = 'admin'")
+    cursor.execute("""
+        UPDATE usuarios SET permisos = ?
+        WHERE permisos IS NULL AND rol = 'super_admin'
+    """, (json.dumps(PERMISOS_PRESET["super_admin"]),))
+    cursor.execute("""
+        UPDATE usuarios SET permisos = ?
+        WHERE permisos IS NULL AND rol = 'lector'
+    """, (json.dumps(PERMISOS_PRESET["lector"]),))
 
     # --------------------------------------------------------
     # MIGRACIÓN DE ESTADOS ANTIGUOS Y DATOS PREVIOS
@@ -1412,6 +1442,150 @@ def actualizar_estado_postulacion(
         f"Nuevo estado: {nuevo_estado}"
     )
 
+    conn.commit()
+    conn.close()
+
+
+# ============================================================
+# USUARIOS Y ROLES
+#
+# Roles: "admin" (control total) y "lector" (solo consulta: puede ver
+# candidatos, descargar el informe en PDF y escribir observaciones, pero
+# no crear/editar/eliminar vacantes o candidatos, ni ejecutar el análisis).
+# ============================================================
+
+# Las 4 casillas de permisos que existen en el sistema. "usuarios" es lo único
+# que separa a un Súper administrador de alguien con Control total.
+CAPACIDADES = ("candidatos", "proceso", "vacantes", "usuarios")
+
+PERMISOS_PRESET = {
+    "super_admin":   {"candidatos": True,  "proceso": True,  "vacantes": True,  "usuarios": True},
+    "control_total": {"candidatos": True,  "proceso": True,  "vacantes": True,  "usuarios": False},
+    "lector":        {"candidatos": False, "proceso": False, "vacantes": False, "usuarios": False},
+}
+
+ROLES_VALIDOS = ("super_admin", "control_total", "lector", "personalizado")
+
+NOMBRES_ROL = {
+    "super_admin": "Súper administrador",
+    "control_total": "Control total",
+    "lector": "Solo lector",
+    "personalizado": "Personalizado",
+}
+
+
+def _normalizar_permisos(permisos):
+    """Se queda solo con las 4 casillas conocidas; lo demás lo trata como False."""
+    permisos = permisos or {}
+    return {cap: bool(permisos.get(cap)) for cap in CAPACIDADES}
+
+
+def _hash_password(password, sal=None):
+    sal = sal or secrets.token_hex(16)
+    derivado = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(sal), 100_000)
+    return f"{sal}${derivado.hex()}"
+
+
+def _verificar_password(password, hash_guardado):
+    try:
+        sal, _ = hash_guardado.split("$", 1)
+    except (ValueError, AttributeError):
+        return False
+    return hmac.compare_digest(_hash_password(password, sal), hash_guardado)
+
+
+def crear_usuario(usuario, nombre, password, rol="lector", permisos=None):
+    """
+    Crea un usuario. Lanza ValueError si el usuario ya existe o si faltan datos.
+
+    Para los roles predefinidos (super_admin, control_total, lector) los permisos
+    son fijos y se ignora lo que llegue en `permisos`. Solo con rol="personalizado"
+    se guardan los permisos indicados casilla por casilla.
+    """
+    usuario = _normalizar(usuario)
+    rol = rol if rol in ROLES_VALIDOS else "lector"
+    if not usuario or not password:
+        raise ValueError("El usuario y la contraseña son obligatorios.")
+
+    permisos_finales = PERMISOS_PRESET[rol] if rol in PERMISOS_PRESET else _normalizar_permisos(permisos)
+
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "INSERT INTO usuarios (usuario, nombre, password_hash, rol, permisos) VALUES (?, ?, ?, ?, ?)",
+            (usuario, _normalizar(nombre) or usuario, _hash_password(password), rol, json.dumps(permisos_finales))
+        )
+        conn.commit()
+        return cursor.lastrowid
+    except Exception:
+        conn.rollback()
+        raise ValueError(f'Ya existe un usuario con el nombre "{usuario}".')
+    finally:
+        conn.close()
+
+
+def _permisos_de_fila(fila):
+    try:
+        datos = json.loads(fila["permisos"]) if fila["permisos"] else None
+    except (TypeError, ValueError):
+        datos = None
+    if datos is None:
+        datos = PERMISOS_PRESET.get(fila["rol"], PERMISOS_PRESET["lector"])
+    return _normalizar_permisos(datos)
+
+
+def verificar_usuario(usuario, password):
+    """Devuelve los datos del usuario (sin la contraseña) si las credenciales son válidas y está activo."""
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT id, usuario, nombre, password_hash, rol, permisos, activo FROM usuarios WHERE usuario = ?",
+        (_normalizar(usuario),)
+    )
+    fila = cursor.fetchone()
+    conn.close()
+
+    if not fila or not fila["activo"] or not _verificar_password(password, fila["password_hash"]):
+        return None
+    return {
+        "id": fila["id"], "usuario": fila["usuario"], "nombre": fila["nombre"],
+        "rol": fila["rol"], "permisos": _permisos_de_fila(fila)
+    }
+
+
+def obtener_usuarios():
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, usuario, nombre, rol, permisos, activo, fecha_creacion FROM usuarios ORDER BY id")
+    filas = [dict(f) for f in cursor.fetchall()]
+    conn.close()
+    for f in filas:
+        f["permisos"] = _permisos_de_fila(f)
+    return filas
+
+
+def hay_usuarios_registrados():
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS total FROM usuarios")
+    total = cursor.fetchone()[0]
+    conn.close()
+    return total > 0
+
+
+def alternar_estado_usuario(usuario_id, activo):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute("UPDATE usuarios SET activo = ? WHERE id = ?", (1 if activo else 0, usuario_id))
+    conn.commit()
+    conn.close()
+
+
+def eliminar_usuario(usuario_id):
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM usuarios WHERE id = ?", (usuario_id,))
     conn.commit()
     conn.close()
 

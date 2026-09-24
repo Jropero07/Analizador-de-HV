@@ -12,10 +12,23 @@ from ai_engine import extraer_datos_candidato, analizar_candidato_vs_vacante, re
 from ponderacion import generar_tabla_ponderacion_html
 from informe_pdf import generar_informe_pdf
 
-# Inicializar Base de Datos SQLite al arrancar
+def _leer_secreto(nombre, defecto=""):
+    try:
+        valor = st.secrets[nombre]
+    except Exception:
+        valor = os.getenv(nombre, defecto)
+    return str(valor).strip()
+
+
+# Inicializar Base de Datos al arrancar y sembrar el usuario administrador
+# (una sola vez: si ya hay usuarios creados, no hace nada).
 @st.cache_resource(show_spinner=False)
 def _iniciar_db():
     database.inicializar_db()
+    if not database.hay_usuarios_registrados():
+        _usuario_semilla = _leer_secreto("APP_USER", "admin")
+        _clave_semilla = _leer_secreto("APP_PASSWORD", "admin")
+        database.crear_usuario(_usuario_semilla, "Administrador", _clave_semilla, "admin")
 
 
 _iniciar_db()
@@ -27,14 +40,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-# Acceso con contraseña: se activa si APP_PASSWORD está definida en Secrets / .env
-def _leer_secreto(nombre, defecto=""):
-    try:
-        valor = st.secrets[nombre]
-    except Exception:
-        valor = os.getenv(nombre, defecto)
-    return str(valor).strip()
 
 
 _VARS_CLARO = """
@@ -139,8 +144,7 @@ _LOGIN_ENCABEZADO = """
 <div class="login-sub">Colegio Americano de Barranquilla</div>
 """
 
-_APP_PASSWORD = _leer_secreto("APP_PASSWORD")
-if _APP_PASSWORD and not st.session_state.get("autenticado"):
+if database.hay_usuarios_registrados() and not st.session_state.get("autenticado"):
     st.markdown(_TEMA_CSS, unsafe_allow_html=True)
     st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
     st.markdown(_LOGIN_ENCABEZADO, unsafe_allow_html=True)
@@ -149,12 +153,30 @@ if _APP_PASSWORD and not st.session_state.get("autenticado"):
         _clave = st.text_input("Contraseña", type="password", placeholder="Contraseña", label_visibility="collapsed")
         _entrar = st.form_submit_button("INGRESAR", type="primary", use_container_width=True)
     if _entrar:
-        if _usuario.strip() == _leer_secreto("APP_USER", "admin") and _clave.strip() == _APP_PASSWORD:
+        _datos_usuario = database.verificar_usuario(_usuario.strip(), _clave.strip())
+        if _datos_usuario:
             st.session_state.autenticado = True
+            st.session_state.usuario_id = _datos_usuario["id"]
+            st.session_state.nombre_usuario = _datos_usuario["nombre"]
+            st.session_state.rol = _datos_usuario["rol"]
+            st.session_state.permisos = _datos_usuario["permisos"]
             st.rerun()
         else:
             st.error("Usuario o contraseña incorrectos.")
     st.stop()
+
+if "rol" not in st.session_state:
+    # No hay usuarios configurados todavía (modo de desarrollo sin login): control total.
+    st.session_state.rol = "super_admin"
+    st.session_state.nombre_usuario = st.session_state.get("nombre_usuario", "Administrador")
+    st.session_state.permisos = database.PERMISOS_PRESET["super_admin"]
+
+PERMISOS = st.session_state.get("permisos") or {}
+PUEDE_CANDIDATOS = bool(PERMISOS.get("candidatos"))
+PUEDE_PROCESO = bool(PERMISOS.get("proceso"))
+PUEDE_VACANTES = bool(PERMISOS.get("vacantes"))
+PUEDE_USUARIOS = bool(PERMISOS.get("usuarios"))
+NOMBRE_ROL = database.NOMBRES_ROL.get(st.session_state.get("rol"), "Personalizado")
 
 # =============================================================================
 # ESTILOS CSS SAAS / ERP (Sin círculos en radio, solo sombreado, sin emojis)
@@ -589,7 +611,11 @@ with st.sidebar:
     if "opcion_menu" not in st.session_state:
         st.session_state.opcion_menu = "Candidatos"
 
-    for _item in ["Candidatos", "Vacantes", "Dashboard", "Reportes & Historial"]:
+    _items_menu = ["Candidatos", "Vacantes", "Dashboard", "Reportes & Historial"]
+    if PUEDE_USUARIOS:
+        _items_menu.append("Usuarios")
+
+    for _item in _items_menu:
         if st.button(
             _item,
             key=f"nav_{_item}",
@@ -603,13 +629,14 @@ with st.sidebar:
     st.markdown("<br><br>", unsafe_allow_html=True)
 
     if st.session_state.get("autenticado"):
-        _nombre_usuario = _leer_secreto("APP_USER", "admin")
+        _nombre_usuario = st.session_state.get("nombre_usuario", "Usuario")
+        _etiqueta_rol = NOMBRE_ROL
         st.markdown(f"""
             <div class="perfil-box">
                 <div class="perfil-avatar">{html.escape(_nombre_usuario[:1].upper())}</div>
                 <div>
                     <span class="perfil-nombre">{html.escape(_nombre_usuario)}</span>
-                    <span class="perfil-rol">Sesión activa</span>
+                    <span class="perfil-rol">{html.escape(_etiqueta_rol)}</span>
                 </div>
             </div>
         """, unsafe_allow_html=True)
@@ -680,205 +707,211 @@ if opcion == "Candidatos":
     else:
         # 4. Formulario estilo Card (Como en la imagen de referencia)
         with st.expander("+ Formulario de Registro y Extracción de Hoja de Vida", expanded=False):
-            v_dict = {f"#{v['id']} - {v['titulo']} ({v['area']})": dict(v) for v in vacantes_abiertas}
-            v_sel_nombre = st.selectbox("Vacante Objetivo *", list(v_dict.keys()))
-            v_actual = v_dict[v_sel_nombre]
+            if not PUEDE_CANDIDATOS:
+                st.info("Su usuario no tiene permiso para registrar candidatos. Puede consultarlos en la tabla de abajo.")
+            else:
+                v_dict = {f"#{v['id']} - {v['titulo']} ({v['area']})": dict(v) for v in vacantes_abiertas}
+                v_sel_nombre = st.selectbox("Vacante Objetivo *", list(v_dict.keys()))
+                v_actual = v_dict[v_sel_nombre]
 
-            col_up1, col_up2 = st.columns([3, 1])
-            with col_up1:
-                adjunto = st.file_uploader(
-                    "Cargar Hoja de Vida (PDF, DOCX, TXT):",
-                    type=["pdf", "docx", "txt"],
-                    key=f"uploader_cv_main_{st.session_state.uploader_nonce}"
-                )
-                if adjunto is not None and st.session_state.get("ultimo_archivo", {}).get("nombre_original") != adjunto.name:
-                    nombre_archivo, ruta_archivo = parser.guardar_archivo_subido(adjunto)
-                    st.session_state.ultimo_archivo = {
-                        "nombre": nombre_archivo,
-                        "nombre_original": adjunto.name,
-                        "ruta": ruta_archivo,
-                        "tipo": os.path.splitext(nombre_archivo)[1].lower()
-                    }
-                    texto_extraido = parser.procesar_documento(adjunto, nombre_archivo=adjunto.name)
-                    st.session_state.texto_cv_original = texto_extraido
-                    if texto_extraido.strip():
-                        with st.spinner("Generando resumen de la Hoja de Vida..."):
-                            st.session_state.texto_cv = resumir_hoja_de_vida(texto_extraido)
-                    else:
-                        st.session_state.texto_cv = texto_extraido
-
-            with col_up2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                if st.button("Extraer Datos con IA", use_container_width=True, help="Extrae automáticamente los datos de contacto desde el texto"):
-                    _texto_para_extraer = st.session_state.texto_cv_original.strip() or st.session_state.texto_cv.strip()
-                    if not _texto_para_extraer:
-                        st.warning("Adjunte un archivo o ingrese el texto de la HV primero.")
-                    else:
-                        with st.spinner("Extrayendo datos de contacto..."):
-                            dc = extraer_datos_candidato(_texto_para_extraer)
-                            if "error" in dc:
-                                st.error(dc["error"])
-                            else:
-                                st.session_state.buffer_contacto = {
-                                    "nombre": dc.get("nombre", ""),
-                                    "documento": dc.get("documento", ""),
-                                    "telefono": dc.get("telefono", ""),
-                                    "email": dc.get("email", "")
-                                }
-                                st.toast("Campos extraídos con éxito", icon="✔")
-                                st.rerun()
-
-            col_f1, col_f2, col_f3 = st.columns(3)
-            with col_f1:
-                c_nom = st.text_input("Nombre Completo *", value=st.session_state.buffer_contacto["nombre"])
-                c_tel = st.text_input("Teléfono", value=st.session_state.buffer_contacto["telefono"])
-            with col_f2:
-                # CAMPO DE DOCUMENTO DE IDENTIDAD OPCIONAL
-                c_doc = st.text_input(
-                    "Documento de Identidad (Opcional)",
-                    value=st.session_state.buffer_contacto["documento"],
-                    placeholder="Solo si la HV lo contiene"
-                )
-                c_mail = st.text_input("Correo Electrónico *", value=st.session_state.buffer_contacto["email"])
-            with col_f3:
-                st.markdown("**Resumen de Vacante Seleccionada:**")
-                st.caption(f"**Cargo:** {v_actual['titulo']}\n\n**Área:** {v_actual['area']}\n\n**Requisitos:** {v_actual['experiencia'] or 'No especificados'}")
-
-            c_texto_doc = st.text_area(
-                "Contenido textual de la Hoja de Vida:",
-                value=st.session_state.texto_cv,
-                height=150,
-                placeholder="El texto extraído de la hoja de vida aparecerá aquí..."
-            )
-
-            col_btn_l, col_btn_r1, col_btn_r2 = st.columns([4, 2, 2])
-            with col_btn_r1:
-                if st.button("Limpiar Formulario", use_container_width=True):
-                    st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
-                    st.session_state.texto_cv = ""
-                    st.session_state.texto_cv_original = ""
-                    st.session_state.ultimo_archivo = None
-                    st.session_state.uploader_nonce += 1
-                    st.rerun()
-
-            with col_btn_r2:
-                btn_guardar_analizar = st.button("Guardar y Analizar con IA", type="primary", use_container_width=True)
-
-            if btn_guardar_analizar:
-                if not c_nom.strip() or not c_mail.strip():
-                    st.error("Diligencie los campos obligatorios: Nombre Completo y Correo Electrónico.")
-                elif not c_texto_doc.strip():
-                    st.error("Se requiere el texto de la Hoja de Vida para poder realizar el análisis.")
-                else:
-                    # 1. Crear o actualizar candidato (documento es opcional)
-                    candidato_id = database.crear_candidato(
-                        nombre=c_nom,
-                        documento=c_doc,
-                        telefono=c_tel,
-                        email=c_mail
+                col_up1, col_up2 = st.columns([3, 1])
+                with col_up1:
+                    adjunto = st.file_uploader(
+                        "Cargar Hoja de Vida (PDF, DOCX, TXT):",
+                        type=["pdf", "docx", "txt"],
+                        key=f"uploader_cv_main_{st.session_state.uploader_nonce}"
                     )
+                    if adjunto is not None and st.session_state.get("ultimo_archivo", {}).get("nombre_original") != adjunto.name:
+                        nombre_archivo, ruta_archivo = parser.guardar_archivo_subido(adjunto)
+                        st.session_state.ultimo_archivo = {
+                            "nombre": nombre_archivo,
+                            "nombre_original": adjunto.name,
+                            "ruta": ruta_archivo,
+                            "tipo": os.path.splitext(nombre_archivo)[1].lower()
+                        }
+                        texto_extraido = parser.procesar_documento(adjunto, nombre_archivo=adjunto.name)
+                        st.session_state.texto_cv_original = texto_extraido
+                        if texto_extraido.strip():
+                            with st.spinner("Generando resumen de la Hoja de Vida..."):
+                                st.session_state.texto_cv = resumir_hoja_de_vida(texto_extraido)
+                        else:
+                            st.session_state.texto_cv = texto_extraido
 
-                    # 2. Crear postulación
-                    arch = st.session_state.ultimo_archivo or {}
-                    postulacion_id = database.crear_postulacion(
-                        candidato_id=candidato_id,
-                        vacante_id=v_actual["id"],
-                        fuente="Carga Manual",
-                        archivo_nombre=arch.get("nombre", ""),
-                        archivo_ruta=arch.get("ruta", ""),
-                        archivo_tipo=arch.get("tipo", ""),
-                        texto_hv=c_texto_doc
+                with col_up2:
+                    st.markdown("<br>", unsafe_allow_html=True)
+                    if st.button("Extraer Datos con IA", use_container_width=True, help="Extrae automáticamente los datos de contacto desde el texto"):
+                        _texto_para_extraer = st.session_state.texto_cv_original.strip() or st.session_state.texto_cv.strip()
+                        if not _texto_para_extraer:
+                            st.warning("Adjunte un archivo o ingrese el texto de la HV primero.")
+                        else:
+                            with st.spinner("Extrayendo datos de contacto..."):
+                                dc = extraer_datos_candidato(_texto_para_extraer)
+                                if "error" in dc:
+                                    st.error(dc["error"])
+                                else:
+                                    st.session_state.buffer_contacto = {
+                                        "nombre": dc.get("nombre", ""),
+                                        "documento": dc.get("documento", ""),
+                                        "telefono": dc.get("telefono", ""),
+                                        "email": dc.get("email", "")
+                                    }
+                                    st.toast("Campos extraídos con éxito", icon="✔")
+                                    st.rerun()
+
+                col_f1, col_f2, col_f3 = st.columns(3)
+                with col_f1:
+                    c_nom = st.text_input("Nombre Completo *", value=st.session_state.buffer_contacto["nombre"])
+                    c_tel = st.text_input("Teléfono", value=st.session_state.buffer_contacto["telefono"])
+                with col_f2:
+                    # CAMPO DE DOCUMENTO DE IDENTIDAD OPCIONAL
+                    c_doc = st.text_input(
+                        "Documento de Identidad (Opcional)",
+                        value=st.session_state.buffer_contacto["documento"],
+                        placeholder="Solo si la HV lo contiene"
                     )
+                    c_mail = st.text_input("Correo Electrónico *", value=st.session_state.buffer_contacto["email"])
+                with col_f3:
+                    st.markdown("**Resumen de Vacante Seleccionada:**")
+                    st.caption(f"**Cargo:** {v_actual['titulo']}\n\n**Área:** {v_actual['area']}\n\n**Requisitos:** {v_actual['experiencia'] or 'No especificados'}")
 
-                    # 3. Registrar documento si existe
-                    if arch:
-                        database.registrar_documento(
-                            postulacion_id=postulacion_id,
-                            candidato_id=candidato_id,
-                            nombre_archivo=arch.get("nombre", ""),
-                            ruta_archivo=arch.get("ruta", ""),
-                            tipo_archivo=arch.get("tipo", ""),
-                            origen="Carga Manual"
+                c_texto_doc = st.text_area(
+                    "Contenido textual de la Hoja de Vida:",
+                    value=st.session_state.texto_cv,
+                    height=150,
+                    placeholder="El texto extraído de la hoja de vida aparecerá aquí..."
+                )
+
+                col_btn_l, col_btn_r1, col_btn_r2 = st.columns([4, 2, 2])
+                with col_btn_r1:
+                    if st.button("Limpiar Formulario", use_container_width=True):
+                        st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
+                        st.session_state.texto_cv = ""
+                        st.session_state.texto_cv_original = ""
+                        st.session_state.ultimo_archivo = None
+                        st.session_state.uploader_nonce += 1
+                        st.rerun()
+
+                with col_btn_r2:
+                    btn_guardar_analizar = st.button("Guardar y Analizar con IA", type="primary", use_container_width=True)
+
+                if btn_guardar_analizar:
+                    if not c_nom.strip() or not c_mail.strip():
+                        st.error("Diligencie los campos obligatorios: Nombre Completo y Correo Electrónico.")
+                    elif not c_texto_doc.strip():
+                        st.error("Se requiere el texto de la Hoja de Vida para poder realizar el análisis.")
+                    else:
+                        # 1. Crear o actualizar candidato (documento es opcional)
+                        candidato_id = database.crear_candidato(
+                            nombre=c_nom,
+                            documento=c_doc,
+                            telefono=c_tel,
+                            email=c_mail
                         )
 
-                    # 4. Ejecutar Análisis IA
-                    with st.spinner("La IA está estudiando el perfil frente a los requisitos de la vacante..."):
-                        res_ia = analizar_candidato_vs_vacante(dict(v_actual), c_texto_doc)
-
-                    if "error" in res_ia:
-                        database.guardar_error_analisis(
+                        # 2. Crear postulación
+                        arch = st.session_state.ultimo_archivo or {}
+                        postulacion_id = database.crear_postulacion(
                             candidato_id=candidato_id,
                             vacante_id=v_actual["id"],
-                            error=res_ia["error"],
-                            postulacion_id=postulacion_id
+                            fuente="Carga Manual",
+                            archivo_nombre=arch.get("nombre", ""),
+                            archivo_ruta=arch.get("ruta", ""),
+                            archivo_tipo=arch.get("tipo", ""),
+                            texto_hv=c_texto_doc
                         )
-                        st.error(f"Error en el análisis de IA: {res_ia['error']}")
-                    else:
-                        database.guardar_analisis(
-                            candidato_id=candidato_id,
-                            vacante_id=v_actual["id"],
-                            puntaje_total=res_ia.get("puntaje_total", 0),
-                            decision=res_ia.get("decision", "Pendiente"),
-                            resumen_ejecutivo=res_ia.get("resumen_ejecutivo", ""),
-                            cumplimiento_json=res_ia.get("cumplimiento_criterios", {}),
-                            alertas=res_ia.get("alertas_detectadas", []),
-                            postulacion_id=postulacion_id
-                        )
-                        st.session_state.ver_analisis_id = postulacion_id
-                        st.toast("Candidato guardado y analizado exitosamente", icon="✔")
 
-                    # Limpiar formulario por completo, incluido el archivo cargado
-                    st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
-                    st.session_state.texto_cv = ""
-                    st.session_state.texto_cv_original = ""
-                    st.session_state.ultimo_archivo = None
-                    st.session_state.uploader_nonce += 1
-                    st.rerun()
+                        # 3. Registrar documento si existe
+                        if arch:
+                            database.registrar_documento(
+                                postulacion_id=postulacion_id,
+                                candidato_id=candidato_id,
+                                nombre_archivo=arch.get("nombre", ""),
+                                ruta_archivo=arch.get("ruta", ""),
+                                tipo_archivo=arch.get("tipo", ""),
+                                origen="Carga Manual"
+                            )
+
+                        # 4. Ejecutar Análisis IA
+                        with st.spinner("La IA está estudiando el perfil frente a los requisitos de la vacante..."):
+                            res_ia = analizar_candidato_vs_vacante(dict(v_actual), c_texto_doc)
+
+                        if "error" in res_ia:
+                            database.guardar_error_analisis(
+                                candidato_id=candidato_id,
+                                vacante_id=v_actual["id"],
+                                error=res_ia["error"],
+                                postulacion_id=postulacion_id
+                            )
+                            st.error(f"Error en el análisis de IA: {res_ia['error']}")
+                        else:
+                            database.guardar_analisis(
+                                candidato_id=candidato_id,
+                                vacante_id=v_actual["id"],
+                                puntaje_total=res_ia.get("puntaje_total", 0),
+                                decision=res_ia.get("decision", "Pendiente"),
+                                resumen_ejecutivo=res_ia.get("resumen_ejecutivo", ""),
+                                cumplimiento_json=res_ia.get("cumplimiento_criterios", {}),
+                                alertas=res_ia.get("alertas_detectadas", []),
+                                postulacion_id=postulacion_id
+                            )
+                            st.session_state.ver_analisis_id = postulacion_id
+                            st.toast("Candidato guardado y analizado exitosamente", icon="✔")
+
+                        # Limpiar formulario por completo, incluido el archivo cargado
+                        st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
+                        st.session_state.texto_cv = ""
+                        st.session_state.texto_cv_original = ""
+                        st.session_state.ultimo_archivo = None
+                        st.session_state.uploader_nonce += 1
+                        st.rerun()
 
         # 4b. CARGA MASIVA DE HOJAS DE VIDA
         with st.expander("+ Carga Masiva de Hojas de Vida (varias a la vez)", expanded=False):
-            if st.session_state.get("resultado_masivo"):
-                st.markdown("**Resultado de la última carga masiva:**")
-                st.dataframe(pd.DataFrame(st.session_state.resultado_masivo), use_container_width=True, hide_index=True)
-                if st.button("Cerrar resumen", key="cerrar_resumen_masivo"):
-                    st.session_state.resultado_masivo = None
-                    st.rerun()
+            if not PUEDE_CANDIDATOS:
+                st.info("Su usuario no tiene permiso para realizar cargas masivas de hojas de vida.")
+            else:
+                if st.session_state.get("resultado_masivo"):
+                    st.markdown("**Resultado de la última carga masiva:**")
+                    st.dataframe(pd.DataFrame(st.session_state.resultado_masivo), use_container_width=True, hide_index=True)
+                    if st.button("Cerrar resumen", key="cerrar_resumen_masivo"):
+                        st.session_state.resultado_masivo = None
+                        st.rerun()
 
-            st.caption(
-                f"Cada archivo se lee, se extraen sus datos de contacto, se crea el candidato y su postulación y se analiza con IA. "
-                f"Máximo {MAX_LOTE_MASIVO} archivos por carga, unos {PAUSA_MASIVO_SEG} segundos por hoja de vida por el límite de la IA gratuita. "
-                f"Mantenga esta pestaña abierta mientras procesa."
-            )
-            v_sel_masivo = st.selectbox("Vacante Objetivo *", list(v_dict.keys()), key="vacante_masiva")
-            archivos_masivos = st.file_uploader(
-                "Cargar varias Hojas de Vida (PDF, DOCX, TXT):",
-                type=["pdf", "docx", "txt"],
-                accept_multiple_files=True,
-                key="uploader_cv_masivo"
-            )
-            if archivos_masivos:
-                st.caption(f"{len(archivos_masivos)} archivo(s) seleccionado(s).")
+                st.caption(
+                    f"Cada archivo se lee, se extraen sus datos de contacto, se crea el candidato y su postulación y se analiza con IA. "
+                    f"Máximo {MAX_LOTE_MASIVO} archivos por carga, unos {PAUSA_MASIVO_SEG} segundos por hoja de vida por el límite de la IA gratuita. "
+                    f"Mantenga esta pestaña abierta mientras procesa."
+                )
+                v_sel_masivo = st.selectbox("Vacante Objetivo *", list(v_dict.keys()), key="vacante_masiva")
+                archivos_masivos = st.file_uploader(
+                    "Cargar varias Hojas de Vida (PDF, DOCX, TXT):",
+                    type=["pdf", "docx", "txt"],
+                    accept_multiple_files=True,
+                    key="uploader_cv_masivo"
+                )
+                if archivos_masivos:
+                    st.caption(f"{len(archivos_masivos)} archivo(s) seleccionado(s).")
 
-            if st.button("Procesar y Analizar Todas", type="primary", key="btn_masivo", disabled=not archivos_masivos):
-                if len(archivos_masivos) > MAX_LOTE_MASIVO:
-                    st.error(f"Seleccionó {len(archivos_masivos)} archivos; el máximo por carga es {MAX_LOTE_MASIVO}.")
-                else:
-                    v_masiva = v_dict[v_sel_masivo]
-                    resultados = []
-                    total_archivos = len(archivos_masivos)
-                    barra = st.progress(0.0)
-                    estado_masivo = st.empty()
-                    for i, archivo in enumerate(archivos_masivos, start=1):
-                        estado_masivo.caption(f"Procesando {i} de {total_archivos}: {archivo.name}")
-                        inicio = time.time()
-                        resultados.append(_procesar_hv_masiva(archivo, v_masiva))
-                        barra.progress(i / total_archivos)
-                        if i < total_archivos:
-                            time.sleep(max(0, PAUSA_MASIVO_SEG - (time.time() - inicio)))
-                    st.session_state.resultado_masivo = resultados
-                    st.rerun()
+                if st.button("Procesar y Analizar Todas", type="primary", key="btn_masivo", disabled=not archivos_masivos):
+                    if len(archivos_masivos) > MAX_LOTE_MASIVO:
+                        st.error(f"Seleccionó {len(archivos_masivos)} archivos; el máximo por carga es {MAX_LOTE_MASIVO}.")
+                    else:
+                        v_masiva = v_dict[v_sel_masivo]
+                        resultados = []
+                        total_archivos = len(archivos_masivos)
+                        barra = st.progress(0.0)
+                        estado_masivo = st.empty()
+                        for i, archivo in enumerate(archivos_masivos, start=1):
+                            estado_masivo.caption(f"Procesando {i} de {total_archivos}: {archivo.name}")
+                            inicio = time.time()
+                            resultados.append(_procesar_hv_masiva(archivo, v_masiva))
+                            barra.progress(i / total_archivos)
+                            if i < total_archivos:
+                                time.sleep(max(0, PAUSA_MASIVO_SEG - (time.time() - inicio)))
+                        st.session_state.resultado_masivo = resultados
+                        st.rerun()
 
-    # 5. FICHA DETALLADA DE ANÁLISIS IA (Resultado claro y tabla de ponderación)
+        # 5. FICHA DETALLADA DE ANÁLISIS IA (Resultado claro y tabla de ponderación)
     if st.session_state.ver_analisis_id:
         p_sel_raw = database.obtener_postulacion(st.session_state.ver_analisis_id)
         if p_sel_raw:
@@ -947,26 +980,29 @@ if opcion == "Candidatos":
                     else:
                         st.success("Sin alertas registradas.")
 
-                    st.markdown("---")
-                    st.markdown("##### Decisión Humana (Revisión del Proceso)")
-                    st.caption("Seleccione el estado en el que avanzará este candidato:")
+                    if PUEDE_PROCESO:
+                        st.markdown("---")
+                        st.markdown("##### Decisión Humana (Revisión del Proceso)")
+                        st.caption("Seleccione el estado en el que avanzará este candidato:")
 
-                    estado_actual = p_sel["estado"]
-                    opciones_estado = ["Pendiente", "En Revisión", "Entrevista", "Aprobado", "Descartado"]
-                    idx_estado = opciones_estado.index(estado_actual) if estado_actual in opciones_estado else 0
+                        estado_actual = p_sel["estado"]
+                        opciones_estado = ["Pendiente", "En Revisión", "Entrevista", "Aprobado", "Descartado"]
+                        idx_estado = opciones_estado.index(estado_actual) if estado_actual in opciones_estado else 0
 
-                    nuevo_est_sel = st.selectbox(
-                        "Estado de la postulación:",
-                        opciones_estado,
-                        index=idx_estado,
-                        key="select_estado_ficha"
-                    )
+                        nuevo_est_sel = st.selectbox(
+                            "Estado de la postulación:",
+                            opciones_estado,
+                            index=idx_estado,
+                            key="select_estado_ficha"
+                        )
 
-                    if nuevo_est_sel != estado_actual:
-                        database.actualizar_estado_postulacion(p_sel["id"], nuevo_est_sel)
-                        st.toast(f"Estado actualizado a: {nuevo_est_sel}", icon="✔")
-                        st.rerun()
+                        if nuevo_est_sel != estado_actual:
+                            database.actualizar_estado_postulacion(p_sel["id"], nuevo_est_sel)
+                            st.toast(f"Estado actualizado a: {nuevo_est_sel}", icon="✔")
+                            st.rerun()
 
+                    else:
+                        st.caption("Su usuario no tiene permiso para cambiar el estado del proceso.")
                     obs_tthh = st.text_area(
                         "Observaciones del líder de TTHH:",
                         value=p_sel.get("observaciones_tthh") or "",
@@ -979,7 +1015,7 @@ if opcion == "Candidatos":
                         st.rerun()
 
                     try:
-                        _autor = _leer_secreto("APP_USER", "") if st.session_state.get("autenticado") else ""
+                        _autor = st.session_state.get("nombre_usuario", "")
                         _nombre_arch = re.sub(r"[^A-Za-z0-9]+", "_", unicodedata.normalize("NFKD", p_sel["nombre"]).encode("ascii", "ignore").decode()).strip("_") or "candidato"
                         st.download_button(
                             "Descargar informe en PDF",
@@ -992,32 +1028,33 @@ if opcion == "Candidatos":
                     except Exception as e:
                         st.warning(f"No se pudo generar el informe PDF: {e}")
 
-                    st.markdown("---")
-                    st.caption("Recalcula el puntaje con la ponderación actual de la vacante. No cambia el estado de la postulación.")
-                    if st.button("Volver a analizar con IA", key=f"reanalizar_{p_sel['id']}", use_container_width=True):
-                        texto_hv_re = p_sel.get("texto_hv") or ""
-                        if not texto_hv_re.strip():
-                            st.error("No se encontró texto de la Hoja de Vida para este candidato.")
-                        else:
-                            with st.spinner("Analizando concordancia con IA..."):
-                                res_re = analizar_candidato_vs_vacante(vac_obj, texto_hv_re)
-                            if "error" in res_re:
-                                st.error(res_re["error"])
+                    if PUEDE_PROCESO:
+                        st.markdown("---")
+                        st.caption("Recalcula el puntaje con la ponderación actual de la vacante. No cambia el estado de la postulación.")
+                        if st.button("Volver a analizar con IA", key=f"reanalizar_{p_sel['id']}", use_container_width=True):
+                            texto_hv_re = p_sel.get("texto_hv") or ""
+                            if not texto_hv_re.strip():
+                                st.error("No se encontró texto de la Hoja de Vida para este candidato.")
                             else:
-                                database.guardar_analisis(
-                                    candidato_id=p_sel["candidato_id"],
-                                    vacante_id=p_sel["vacante_id"],
-                                    puntaje_total=res_re.get("puntaje_total", 0),
-                                    decision=res_re.get("decision", "Pendiente"),
-                                    resumen_ejecutivo=res_re.get("resumen_ejecutivo", ""),
-                                    cumplimiento_json=res_re.get("cumplimiento_criterios", {}),
-                                    alertas=res_re.get("alertas_detectadas", []),
-                                    postulacion_id=p_sel["id"]
-                                )
-                                # guardar_analisis pone el estado en 'Analizado'; se conserva la decisión humana previa
-                                database.actualizar_estado_postulacion(p_sel["id"], estado_actual)
-                                st.toast("Análisis actualizado", icon="✔")
-                                st.rerun()
+                                with st.spinner("Analizando concordancia con IA..."):
+                                    res_re = analizar_candidato_vs_vacante(vac_obj, texto_hv_re)
+                                if "error" in res_re:
+                                    st.error(res_re["error"])
+                                else:
+                                    database.guardar_analisis(
+                                        candidato_id=p_sel["candidato_id"],
+                                        vacante_id=p_sel["vacante_id"],
+                                        puntaje_total=res_re.get("puntaje_total", 0),
+                                        decision=res_re.get("decision", "Pendiente"),
+                                        resumen_ejecutivo=res_re.get("resumen_ejecutivo", ""),
+                                        cumplimiento_json=res_re.get("cumplimiento_criterios", {}),
+                                        alertas=res_re.get("alertas_detectadas", []),
+                                        postulacion_id=p_sel["id"]
+                                    )
+                                    # guardar_analisis pone el estado en 'Analizado'; se conserva la decisión humana previa
+                                    database.actualizar_estado_postulacion(p_sel["id"], estado_actual)
+                                    st.toast("Análisis actualizado", icon="✔")
+                                    st.rerun()
 
             else:
                 st.warning("Esta postulación aún no tiene un análisis registrado por la IA.")
@@ -1133,42 +1170,43 @@ if opcion == "Candidatos":
                     st.session_state.ver_analisis_id = cand["id"]
                     st.rerun()
 
-            with c_act_ai:
-                if st.button("Analizar con IA", key=f"btn_ai_{cand['id']}_{idx}", use_container_width=True):
-                    texto_cand = cand.get("texto_hv")
-                    if not texto_cand:
-                        c_db = database.obtener_candidato(cand["candidato_id"])
-                        c_dict = dict(c_db) if c_db else {}
-                        texto_cand = c_dict.get("formacion", "")
+            if PUEDE_PROCESO:
+                with c_act_ai:
+                    if st.button("Analizar con IA", key=f"btn_ai_{cand['id']}_{idx}", use_container_width=True):
+                        texto_cand = cand.get("texto_hv")
+                        if not texto_cand:
+                            c_db = database.obtener_candidato(cand["candidato_id"])
+                            c_dict = dict(c_db) if c_db else {}
+                            texto_cand = c_dict.get("formacion", "")
 
-                    if not texto_cand.strip():
-                        st.error(f"No hay texto registrado de la hoja de vida para {cand.get('nombre')}.")
-                    else:
-                        with st.spinner(f"Analizando perfil de {cand.get('nombre')} con IA..."):
-                            v_obj = dict(database.obtener_vacante(cand["vacante_id"]))
-                            res = analizar_candidato_vs_vacante(v_obj, texto_cand)
-                            if "error" in res:
-                                st.error(res["error"])
-                            else:
-                                database.guardar_analisis(
-                                    candidato_id=cand["candidato_id"],
-                                    vacante_id=cand["vacante_id"],
-                                    puntaje_total=res.get("puntaje_total", 0),
-                                    decision=res.get("decision", "Pendiente"),
-                                    resumen_ejecutivo=res.get("resumen_ejecutivo", ""),
-                                    cumplimiento_json=res.get("cumplimiento_criterios", {}),
-                                    alertas=res.get("alertas_detectadas", []),
-                                    postulacion_id=cand["id"]
-                                )
-                                st.session_state.ver_analisis_id = cand["id"]
-                                st.toast(f"Análisis completado para {cand.get('nombre')}", icon="✔")
-                                st.rerun()
+                        if not texto_cand.strip():
+                            st.error(f"No hay texto registrado de la hoja de vida para {cand.get('nombre')}.")
+                        else:
+                            with st.spinner(f"Analizando perfil de {cand.get('nombre')} con IA..."):
+                                v_obj = dict(database.obtener_vacante(cand["vacante_id"]))
+                                res = analizar_candidato_vs_vacante(v_obj, texto_cand)
+                                if "error" in res:
+                                    st.error(res["error"])
+                                else:
+                                    database.guardar_analisis(
+                                        candidato_id=cand["candidato_id"],
+                                        vacante_id=cand["vacante_id"],
+                                        puntaje_total=res.get("puntaje_total", 0),
+                                        decision=res.get("decision", "Pendiente"),
+                                        resumen_ejecutivo=res.get("resumen_ejecutivo", ""),
+                                        cumplimiento_json=res.get("cumplimiento_criterios", {}),
+                                        alertas=res.get("alertas_detectadas", []),
+                                        postulacion_id=cand["id"]
+                                    )
+                                    st.session_state.ver_analisis_id = cand["id"]
+                                    st.toast(f"Análisis completado para {cand.get('nombre')}", icon="✔")
+                                    st.rerun()
 
-            with c_act_del:
-                if st.button("Eliminar", key=f"btn_del_{cand['id']}_{idx}", use_container_width=True):
-                    database.eliminar_postulacion(cand["id"])
-                    st.toast(f"Candidato #{cand['id']} eliminado definitivamente", icon="✔")
-                    st.rerun()
+                with c_act_del:
+                    if st.button("Eliminar", key=f"btn_del_{cand['id']}_{idx}", use_container_width=True):
+                        database.eliminar_postulacion(cand["id"])
+                        st.toast(f"Candidato #{cand['id']} eliminado definitivamente", icon="✔")
+                        st.rerun()
 
             st.markdown("<div style='margin-bottom: 8px;'></div>", unsafe_allow_html=True)
 
@@ -1180,37 +1218,38 @@ elif opcion == "Vacantes":
     st.markdown('<div class="top-breadcrumb">SISTEMA DE TALENTO HUMANO</div>', unsafe_allow_html=True)
     st.markdown('<div class="top-title">Gestión de Vacantes y Perfiles</div>', unsafe_allow_html=True)
 
-    with st.expander("+ Crear Nueva Vacante", expanded=False):
-        with st.form("form_vacante_erp", clear_on_submit=True):
-            col_v1, col_v2 = st.columns(2)
-            with col_v1:
-                v_tit = st.text_input("Título del Cargo / Vacante *")
-                v_are = st.text_input("Área / Departamento *")
-                v_for = st.text_area("Formación Académica Requerida")
-            with col_v2:
-                v_exp = st.text_area("Experiencia Laboral Requerida")
-                v_hab = st.text_area("Habilidades Técnicas y Software")
-                v_otr = st.text_area("Criterios de Ponderación / Habilidades Blandas", help="Ejemplo:\n- Experiencia: 35%\n- Portafolio: 20%\n- Habilidades técnicas: 20%\n- Formación: 15%\n- Habilidades blandas: 10%")
+    if PUEDE_VACANTES:
+        with st.expander("+ Crear Nueva Vacante", expanded=False):
+            with st.form("form_vacante_erp", clear_on_submit=True):
+                col_v1, col_v2 = st.columns(2)
+                with col_v1:
+                    v_tit = st.text_input("Título del Cargo / Vacante *")
+                    v_are = st.text_input("Área / Departamento *")
+                    v_for = st.text_area("Formación Académica Requerida")
+                with col_v2:
+                    v_exp = st.text_area("Experiencia Laboral Requerida")
+                    v_hab = st.text_area("Habilidades Técnicas y Software")
+                    v_otr = st.text_area("Criterios de Ponderación / Habilidades Blandas", help="Ejemplo:\n- Experiencia: 35%\n- Portafolio: 20%\n- Habilidades técnicas: 20%\n- Formación: 15%\n- Habilidades blandas: 10%")
 
-            v_des = st.text_area("Descripción General del Cargo *")
+                v_des = st.text_area("Descripción General del Cargo *")
 
-            col_sub1, col_sub2 = st.columns([4, 1])
-            with col_sub2:
-                if st.form_submit_button("Guardar Vacante", type="primary", use_container_width=True):
-                    if v_tit.strip() and v_are.strip() and v_des.strip():
-                        nueva_id = database.crear_vacante(
-                            titulo=v_tit,
-                            area=v_are,
-                            descripcion=v_des,
-                            formacion=v_for,
-                            experiencia=v_exp,
-                            habilidades=v_hab,
-                            otros_criterios=v_otr
-                        )
-                        st.toast(f"Vacante #{nueva_id} guardada con éxito", icon="✔")
-                        st.rerun()
-                    else:
-                        st.error("Diligencie los campos requeridos marcados con (*).")
+                col_sub1, col_sub2 = st.columns([4, 1])
+                with col_sub2:
+                    if st.form_submit_button("Guardar Vacante", type="primary", use_container_width=True):
+                        if v_tit.strip() and v_are.strip() and v_des.strip():
+                            nueva_id = database.crear_vacante(
+                                titulo=v_tit,
+                                area=v_are,
+                                descripcion=v_des,
+                                formacion=v_for,
+                                experiencia=v_exp,
+                                habilidades=v_hab,
+                                otros_criterios=v_otr
+                            )
+                            st.toast(f"Vacante #{nueva_id} guardada con éxito", icon="✔")
+                            st.rerun()
+                        else:
+                            st.error("Diligencie los campos requeridos marcados con (*).")
 
     st.markdown("---")
     st.markdown("##### Catálogo de Vacantes")
@@ -1233,21 +1272,22 @@ elif opcion == "Vacantes":
                         st.write(f"**Ponderación:**\n{vac['otros_criterios']}")
 
             with col_v_act:
-                c_b1, c_b2 = st.columns(2)
-                with c_b1:
-                    if vac["estado"] == "Abierta":
-                        if st.button("Cerrar", key=f"vc_close_{vac['id']}_{idx}"):
-                            database.cambiar_estado_vacante(vac["id"], "Cerrada")
+                if PUEDE_VACANTES:
+                    c_b1, c_b2 = st.columns(2)
+                    with c_b1:
+                        if vac["estado"] == "Abierta":
+                            if st.button("Cerrar", key=f"vc_close_{vac['id']}_{idx}"):
+                                database.cambiar_estado_vacante(vac["id"], "Cerrada")
+                                st.rerun()
+                        else:
+                            if st.button("Abrir", key=f"vc_open_{vac['id']}_{idx}"):
+                                database.cambiar_estado_vacante(vac["id"], "Abierta")
+                                st.rerun()
+                    with c_b2:
+                        if st.button("Eliminar", key=f"vc_del_{vac['id']}_{idx}"):
+                            database.eliminar_vacante(vac["id"])
+                            st.toast("Vacante eliminada", icon="✔")
                             st.rerun()
-                    else:
-                        if st.button("Abrir", key=f"vc_open_{vac['id']}_{idx}"):
-                            database.cambiar_estado_vacante(vac["id"], "Abierta")
-                            st.rerun()
-                with c_b2:
-                    if st.button("Eliminar", key=f"vc_del_{vac['id']}_{idx}"):
-                        database.eliminar_vacante(vac["id"])
-                        st.toast("Vacante eliminada", icon="✔")
-                        st.rerun()
 
 
 # =============================================================================
@@ -1311,6 +1351,97 @@ elif opcion == "Dashboard":
                         <span style="font-size: 0.8rem; color: var(--text-muted);">Estado: <em>{p.get('estado')}</em> | {score_str}</span>
                     </div>
                 """, unsafe_allow_html=True)
+
+
+# =============================================================================
+# VISTA: GESTIÓN DE USUARIOS (solo administradores)
+# =============================================================================
+elif opcion == "Usuarios":
+    st.markdown('<div class="top-breadcrumb">SISTEMA DE TALENTO HUMANO</div>', unsafe_allow_html=True)
+    st.markdown('<div class="top-title">Usuarios del Sistema</div>', unsafe_allow_html=True)
+
+    if not PUEDE_USUARIOS:
+        st.warning("Su usuario no tiene permiso para gestionar usuarios.")
+    else:
+        st.caption(
+            "**Súper administrador**: control total, incluida la gestión de usuarios. "
+            "**Control total**: igual que el anterior, pero no puede crear ni administrar usuarios. "
+            "**Solo lector**: puede ver candidatos, descargar el informe en PDF y escribir observaciones, "
+            "pero no registrar, analizar, eliminar ni gestionar vacantes. "
+            "**Personalizado**: usted elige exactamente qué puede hacer."
+        )
+
+        if "crear_usuario_nonce" not in st.session_state:
+            st.session_state.crear_usuario_nonce = 0
+        _n = st.session_state.crear_usuario_nonce
+
+        with st.expander("+ Crear Nuevo Usuario", expanded=False):
+            nu_nombre = st.text_input("Nombre completo *", placeholder="Ej: María Rectora", key=f"nu_nombre_{_n}")
+            nu_usuario = st.text_input("Usuario para iniciar sesión *", placeholder="Ej: rectora", key=f"nu_usuario_{_n}")
+            nu_clave = st.text_input("Contraseña *", type="password", key=f"nu_clave_{_n}")
+            nu_tipo = st.selectbox(
+                "Tipo de acceso",
+                ["super_admin", "control_total", "lector", "personalizado"],
+                format_func=lambda r: database.NOMBRES_ROL[r],
+                key=f"nu_tipo_{_n}"
+            )
+
+            permisos_elegidos = None
+            if nu_tipo == "personalizado":
+                st.caption("Marque lo que este usuario podrá hacer:")
+                cp1, cp2, cp3, cp4 = st.columns(4)
+                with cp1:
+                    perm_candidatos = st.checkbox("Registrar candidatos", key=f"perm_cand_{_n}")
+                with cp2:
+                    perm_proceso = st.checkbox("Gestionar proceso (analizar, estado, eliminar)", key=f"perm_proc_{_n}")
+                with cp3:
+                    perm_vacantes = st.checkbox("Gestionar vacantes", key=f"perm_vac_{_n}")
+                with cp4:
+                    perm_usuarios = st.checkbox("Gestionar usuarios", key=f"perm_usr_{_n}")
+                permisos_elegidos = {
+                    "candidatos": perm_candidatos, "proceso": perm_proceso,
+                    "vacantes": perm_vacantes, "usuarios": perm_usuarios
+                }
+
+            if st.button("Crear Usuario", type="primary", use_container_width=True, key=f"btn_crear_usuario_{_n}"):
+                if not nu_nombre.strip() or not nu_usuario.strip() or not nu_clave.strip():
+                    st.error("Diligencie nombre, usuario y contraseña.")
+                else:
+                    try:
+                        database.crear_usuario(nu_usuario, nu_nombre, nu_clave, nu_tipo, permisos_elegidos)
+                        st.toast(f'Usuario "{nu_usuario}" creado con éxito', icon="✔")
+                        st.session_state.crear_usuario_nonce += 1
+                        st.rerun()
+                    except ValueError as e:
+                        st.error(str(e))
+
+        st.markdown("---")
+        st.markdown("##### Usuarios Registrados")
+
+        for u in database.obtener_usuarios():
+            c_u1, c_u2, c_u3, c_u4 = st.columns([2.5, 2.2, 1.3, 1.3])
+            with c_u1:
+                st.write(f"**{u['nombre']}**")
+                st.caption(f"Usuario: {u['usuario']}")
+            with c_u2:
+                st.write(database.NOMBRES_ROL.get(u["rol"], "Personalizado"))
+                if u["rol"] == "personalizado":
+                    otorgados = [cap for cap, val in u["permisos"].items() if val]
+                    st.caption(", ".join(otorgados) if otorgados else "Sin permisos adicionales")
+            with c_u3:
+                st.write("Activo" if u["activo"] else "Inactivo")
+            with c_u4:
+                es_yo_mismo = u["id"] == st.session_state.get("usuario_id")
+                if es_yo_mismo:
+                    st.caption("Sesión actual")
+                elif u["activo"]:
+                    if st.button("Desactivar", key=f"usr_desact_{u['id']}", use_container_width=True):
+                        database.alternar_estado_usuario(u["id"], False)
+                        st.rerun()
+                else:
+                    if st.button("Activar", key=f"usr_act_{u['id']}", use_container_width=True):
+                        database.alternar_estado_usuario(u["id"], True)
+                        st.rerun()
 
 
 # =============================================================================
