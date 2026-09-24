@@ -26,8 +26,9 @@ __pycache__/
 *.so
 .pytest_cache/
 
-# Streamlit
-.streamlit/
+# Streamlit (se sube solo config.toml; los secretos nunca)
+.streamlit/*
+!.streamlit/config.toml
 
 # Sistema operativo
 Thumbs.db
