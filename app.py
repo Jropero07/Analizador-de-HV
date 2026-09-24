@@ -22,13 +22,21 @@ st.set_page_config(
 )
 
 # Acceso con contraseña: se activa si APP_PASSWORD está definida en Secrets / .env
-_APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+def _leer_secreto(nombre, defecto=""):
+    try:
+        valor = st.secrets[nombre]
+    except Exception:
+        valor = os.getenv(nombre, defecto)
+    return str(valor).strip()
+
+
+_APP_PASSWORD = _leer_secreto("APP_PASSWORD")
 if _APP_PASSWORD and not st.session_state.get("autenticado"):
     st.title("Acceso — Talento Humano")
     _usuario = st.text_input("Usuario")
     _clave = st.text_input("Contraseña", type="password")
     if st.button("Ingresar", type="primary"):
-        if _usuario == os.getenv("APP_USER", "admin") and _clave == _APP_PASSWORD:
+        if _usuario.strip() == _leer_secreto("APP_USER", "admin") and _clave.strip() == _APP_PASSWORD:
             st.session_state.autenticado = True
             st.rerun()
         else:
