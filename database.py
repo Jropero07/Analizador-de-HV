@@ -1,4 +1,7 @@
 import os
+import re
+import time
+import threading
 import sqlite3
 import json
 from datetime import datetime
@@ -20,12 +23,218 @@ os.makedirs(DATA_DIR, exist_ok=True)
 # CONEXIÓN
 # ============================================================
 
+def _leer_database_url():
+    try:
+        import streamlit as st
+        valor = st.secrets["DATABASE_URL"]
+    except Exception:
+        valor = os.getenv("DATABASE_URL", "")
+    return str(valor).strip()
+
+
+DATABASE_URL = _leer_database_url()
+USAR_POSTGRES = DATABASE_URL.startswith(("postgres://", "postgresql://"))
+
+_TIPOS_SQL = {"INTEGER", "TEXT", "REAL", "NUMERIC", "VARCHAR", "FLOAT", "DATE", "TIMESTAMP"}
+_TABLAS_CON_ID = {
+    "vacantes", "candidatos", "postulaciones", "analisis",
+    "documentos", "correos_procesados", "historial"
+}
+
+
+def _a_postgres(sql, hay_params):
+    """
+    Traduce una sentencia escrita para SQLite a PostgreSQL.
+    Devuelve (sql_postgres, devuelve_id) o None si la sentencia se omite.
+    """
+    s = sql.strip()
+
+    if re.match(r"PRAGMA\s+foreign_keys", s, re.I):
+        return None
+
+    m = re.match(r"PRAGMA\s+table_info\((\w+)\)", s, re.I)
+    if m:
+        return (
+            "SELECT ordinal_position AS cid, column_name AS name "
+            "FROM information_schema.columns "
+            "WHERE table_schema = current_schema() "
+            f"AND table_name = '{m.group(1).lower()}' "
+            "ORDER BY ordinal_position",
+            False
+        )
+
+    s = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", "SERIAL PRIMARY KEY", s, flags=re.I)
+    s = re.sub(r"\bDATETIME\b", "TIMESTAMP", s, flags=re.I)
+
+    if re.match(r"INSERT\s+OR\s+IGNORE\s+INTO", s, re.I):
+        s = re.sub(r"^INSERT\s+OR\s+IGNORE\s+INTO", "INSERT INTO", s, flags=re.I)
+        s += " ON CONFLICT DO NOTHING"
+    elif re.match(r"INSERT\s+OR\s+REPLACE\s+INTO", s, re.I):
+        s = re.sub(r"^INSERT\s+OR\s+REPLACE\s+INTO", "INSERT INTO", s, flags=re.I)
+        columnas = [c.strip() for c in re.search(r"\(([^)]*)\)", s).group(1).split(",")]
+        asignaciones = ", ".join(f"{c} = EXCLUDED.{c}" for c in columnas if c != "message_id")
+        s += f" ON CONFLICT (message_id) DO UPDATE SET {asignaciones}"
+
+    # Conserva mayúsculas de los alias (Postgres los pasa a minúsculas si no van entre comillas)
+    s = re.sub(
+        r"\bAS\s+([A-Za-z_]\w*)\b(?!\s*\()",
+        lambda m: m.group(0) if m.group(1).upper() in _TIPOS_SQL else f'AS "{m.group(1)}"',
+        s,
+        flags=re.I
+    )
+
+    m = re.match(r"INSERT\s+INTO\s+(\w+)", s, re.I)
+    devuelve_id = bool(m and m.group(1).lower() in _TABLAS_CON_ID)
+    if devuelve_id:
+        s += " RETURNING id"
+
+    if hay_params:
+        s = s.replace("%", "%%")
+    s = s.replace("?", "%s")
+
+    return s, devuelve_id
+
+
+class _CursorPG:
+    """Cursor con la misma interfaz que usa este módulo de sqlite3."""
+
+    def __init__(self, cursor):
+        self._cur = cursor
+        self.lastrowid = None
+
+    def execute(self, sql, params=None):
+        traducido = _a_postgres(sql, bool(params))
+        if traducido is None:
+            return self
+        sql_pg, devuelve_id = traducido
+        self._cur.execute(sql_pg, tuple(params) if params else None)
+        if devuelve_id:
+            fila = self._cur.fetchone()
+            self.lastrowid = fila[0] if fila else None
+        return self
+
+    def fetchone(self):
+        return self._cur.fetchone()
+
+    def fetchall(self):
+        return self._cur.fetchall()
+
+    def __iter__(self):
+        return iter(self._cur)
+
+    @property
+    def description(self):
+        return self._cur.description
+
+    @property
+    def rowcount(self):
+        return self._cur.rowcount
+
+    def close(self):
+        self._cur.close()
+
+
+class _ConexionPG:
+    """Conexión con la misma interfaz que usa este módulo de sqlite3."""
+
+    def __init__(self, conexion):
+        self._conn = conexion
+
+    def cursor(self):
+        return _CursorPG(self._conn.cursor())
+
+    def execute(self, sql, params=None):
+        return self.cursor().execute(sql, params)
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        if self._conn is not None:
+            _devolver_conexion(self._conn)
+            self._conn = None
+
+    def __del__(self):
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+_POOL = []
+_POOL_LOCK = threading.Lock()
+_POOL_MAX_INACTIVAS = 4
+_SEGUNDOS_SIN_VALIDAR = 20
+
+
+def _nueva_conexion_pg():
+    import psycopg2
+    import psycopg2.extras
+    import psycopg2.extensions as ext
+
+    # Las fechas se devuelven como texto "AAAA-MM-DD HH:MM:SS", igual que SQLite
+    ext.register_type(ext.new_type(
+        (1114, 1184),
+        "FECHA_TEXTO",
+        lambda valor, cur: valor.split(".")[0].split("+")[0] if valor else valor
+    ))
+    return psycopg2.connect(
+        DATABASE_URL,
+        cursor_factory=psycopg2.extras.DictCursor,
+        connect_timeout=15
+    )
+
+
+def _tomar_conexion_pg():
+    while True:
+        with _POOL_LOCK:
+            if not _POOL:
+                break
+            conexion, desde = _POOL.pop()
+        if conexion.closed:
+            continue
+        if time.time() - desde > _SEGUNDOS_SIN_VALIDAR:
+            try:
+                cur = conexion.cursor()
+                cur.execute("SELECT 1")
+                conexion.rollback()
+            except Exception:
+                try:
+                    conexion.close()
+                except Exception:
+                    pass
+                continue
+        return conexion
+    return _nueva_conexion_pg()
+
+
+def _devolver_conexion(conexion):
+    try:
+        conexion.rollback()
+        with _POOL_LOCK:
+            if not conexion.closed and len(_POOL) < _POOL_MAX_INACTIVAS:
+                _POOL.append((conexion, time.time()))
+                return
+        conexion.close()
+    except Exception:
+        try:
+            conexion.close()
+        except Exception:
+            pass
+
+
 def obtener_conexion():
     """
-    Crea una conexión SQLite con:
-    - Row factory para acceder a columnas por nombre.
-    - Foreign Keys activadas.
+    Devuelve la conexión a la base de datos:
+    - PostgreSQL (Neon) si DATABASE_URL está definida en Secrets / .env.
+    - SQLite local en caso contrario.
     """
+    if USAR_POSTGRES:
+        return _ConexionPG(_tomar_conexion_pg())
+
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -710,7 +919,6 @@ def eliminar_vacante(vacante_id):
     cursor.execute("DELETE FROM analisis WHERE vacante_id = ?", (vacante_id,))
     cursor.execute("DELETE FROM documentos WHERE postulacion_id IN (SELECT id FROM postulaciones WHERE vacante_id = ?)", (vacante_id,))
     cursor.execute("DELETE FROM postulaciones WHERE vacante_id = ?", (vacante_id,))
-    cursor.execute("UPDATE candidatos SET vacante_id = NULL WHERE vacante_id = ?", (vacante_id,))
 
     cursor.execute("""
         DELETE FROM vacantes
@@ -1760,10 +1968,11 @@ def obtener_reporte_completo_excel(vacante_id=None):
             a.puntaje_total DESC
     """
 
-    df = pd.read_sql_query(
-        query,
-        conn,
-        params=parametros
+    cursor = conn.execute(query, parametros)
+    columnas = [d[0] for d in cursor.description]
+    df = pd.DataFrame(
+        [tuple(fila) for fila in cursor.fetchall()],
+        columns=columnas
     )
 
     conn.close()
