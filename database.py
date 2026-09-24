@@ -1672,7 +1672,7 @@ def obtener_metricas_dashboard():
     """).fetchone()[0]
 
     analisis_realizados = cursor.execute("""
-        SELECT COUNT(*)
+        SELECT COUNT(DISTINCT candidato_id || '-' || vacante_id)
         FROM analisis
         WHERE estado = 'Completado'
     """).fetchone()[0]

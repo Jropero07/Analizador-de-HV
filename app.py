@@ -1,6 +1,7 @@
 import os
 import re
 import json
+import time
 import unicodedata
 import streamlit as st
 import pandas as pd
@@ -20,6 +21,20 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Acceso con contraseña: se activa si APP_PASSWORD está definida en Secrets / .env
+_APP_PASSWORD = os.getenv("APP_PASSWORD", "")
+if _APP_PASSWORD and not st.session_state.get("autenticado"):
+    st.title("Acceso — Talento Humano")
+    _usuario = st.text_input("Usuario")
+    _clave = st.text_input("Contraseña", type="password")
+    if st.button("Ingresar", type="primary"):
+        if _usuario == os.getenv("APP_USER", "admin") and _clave == _APP_PASSWORD:
+            st.session_state.autenticado = True
+            st.rerun()
+        else:
+            st.error("Usuario o contraseña incorrectos.")
+    st.stop()
+
 # =============================================================================
 # ESTILOS CSS SAAS / ERP (Sin círculos en radio, solo sombreado, sin emojis)
 # =============================================================================
@@ -28,7 +43,7 @@ STYLING_ERP = """
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
     :root {
-        --sidebar-bg: #0A1128;
+        --sidebar-bg: #FFFFFF;
         --primary-blue: #0047FF;
         --accent-blue: #2563EB;
         --bg-main: #F8FAFC;
@@ -49,14 +64,14 @@ STYLING_ERP = """
     /* BARRA LATERAL (Sidebar Dark Navy ERP) */
     [data-testid="stSidebar"] {
         background-color: var(--sidebar-bg) !important;
-        border-right: 1px solid rgba(255, 255, 255, 0.08);
+        border-right: 1px solid #E2E8F0;
         padding-top: 0.5rem;
     }
 
     .sidebar-brand-box {
         padding: 12px 14px;
         margin-bottom: 18px;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        border-bottom: 1px solid #E2E8F0;
         display: flex;
         align-items: center;
         gap: 12px;
@@ -82,15 +97,56 @@ STYLING_ERP = """
     }
 
     .sidebar-brand-title {
-        color: #FFFFFF;
+        color: #0F172A;
         font-size: 0.95rem;
         font-weight: 700;
         letter-spacing: 0.2px;
     }
 
     .sidebar-brand-sub {
-        color: #94A3B8;
+        color: #64748B;
         font-size: 0.75rem;
+    }
+
+    /* MENÚ LATERAL CON BOTONES (texto siempre visible) */
+    [data-testid="stSidebar"] .stButton > button {
+        background-color: transparent !important;
+        border: 1px solid transparent !important;
+        box-shadow: none !important;
+        justify-content: flex-start !important;
+        text-align: left !important;
+        padding: 10px 16px !important;
+        border-radius: 8px !important;
+    }
+
+    [data-testid="stSidebar"] .stButton > button p,
+    [data-testid="stSidebar"] .stButton > button div,
+    [data-testid="stSidebar"] .stButton > button span {
+        color: #0F172A !important;
+        font-size: 0.95rem !important;
+        font-weight: 500 !important;
+        text-align: left !important;
+    }
+
+    [data-testid="stSidebar"] .stButton > button:hover {
+        background-color: #EEF2FF !important;
+    }
+
+    [data-testid="stSidebar"] .stButton > button[kind="primary"],
+    [data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
+        background-color: #DBEAFE !important;
+        border-left: 4px solid #2563EB !important;
+    }
+
+    [data-testid="stSidebar"] .stButton > button[kind="primary"] p,
+    [data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] p {
+        color: #1E3A8A !important;
+        font-weight: 700 !important;
+    }
+
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
+    [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
+        color: #64748B !important;
     }
 
     /* OCULTAR CÍRCULO DEL RADIO BUTTON EN SIDEBAR POR COMPLETO */
@@ -256,6 +312,102 @@ if 'ver_analisis_id' not in st.session_state:
 
 
 # =============================================================================
+# CARGA MASIVA DE HOJAS DE VIDA
+# =============================================================================
+MAX_LOTE_MASIVO = 30       # máximo de archivos por carga
+PAUSA_MASIVO_SEG = 40      # segundos mínimos por hoja de vida (límite de tokens por minuto de Groq gratis)
+
+
+def _con_reintento(funcion, *args):
+    """Llama a la IA y, si Groq responde por límite de uso, espera y reintenta."""
+    res = funcion(*args)
+    for _ in range(2):
+        if isinstance(res, dict) and "límite" in str(res.get("error", "")).lower():
+            time.sleep(65)
+            res = funcion(*args)
+        else:
+            break
+    return res
+
+
+def _procesar_hv_masiva(archivo, vacante):
+    """Procesa una hoja de vida: extrae datos, crea/actualiza candidato y postulación, y la analiza."""
+    fila = {"Archivo": archivo.name, "Candidato": "", "Correo": "", "Resultado": "", "Puntaje": None, "Decisión": ""}
+    try:
+        nombre_guardado, ruta = parser.guardar_archivo_subido(archivo)
+        archivo.seek(0)
+        texto = parser.procesar_documento(archivo, nombre_archivo=archivo.name)
+        if not texto.strip():
+            fila["Resultado"] = "Sin texto legible (posible PDF escaneado)"
+            return fila
+
+        datos = _con_reintento(extraer_datos_candidato, texto[:3500])
+        if "error" in datos:
+            fila["Resultado"] = f"Error al extraer datos: {datos['error']}"
+            return fila
+
+        nombre = datos["nombre"] or os.path.splitext(archivo.name)[0]
+        fila["Candidato"] = nombre
+        fila["Correo"] = datos["email"]
+        if not datos["email"]:
+            fila["Resultado"] = "Sin correo en la HV: cárguela manualmente"
+            return fila
+
+        ya_existia = database.buscar_candidato(documento=datos["documento"], email=datos["email"]) is not None
+        candidato_id = database.crear_candidato(
+            nombre=nombre,
+            documento=datos["documento"],
+            telefono=datos["telefono"],
+            email=datos["email"]
+        )
+        postulacion_id = database.crear_postulacion(
+            candidato_id=candidato_id,
+            vacante_id=vacante["id"],
+            fuente="Carga Masiva",
+            archivo_nombre=nombre_guardado,
+            archivo_ruta=ruta,
+            archivo_tipo=os.path.splitext(nombre_guardado)[1].lower(),
+            texto_hv=texto
+        )
+        database.registrar_documento(
+            postulacion_id=postulacion_id,
+            candidato_id=candidato_id,
+            nombre_archivo=nombre_guardado,
+            ruta_archivo=ruta,
+            tipo_archivo=os.path.splitext(nombre_guardado)[1].lower(),
+            origen="Carga Masiva"
+        )
+
+        res = _con_reintento(analizar_candidato_vs_vacante, dict(vacante), texto)
+        if "error" in res:
+            database.guardar_error_analisis(
+                candidato_id=candidato_id,
+                vacante_id=vacante["id"],
+                error=res["error"],
+                postulacion_id=postulacion_id
+            )
+            fila["Resultado"] = f"Error de IA: {res['error']}"
+            return fila
+
+        database.guardar_analisis(
+            candidato_id=candidato_id,
+            vacante_id=vacante["id"],
+            puntaje_total=res.get("puntaje_total", 0),
+            decision=res.get("decision", "Pendiente"),
+            resumen_ejecutivo=res.get("resumen_ejecutivo", ""),
+            cumplimiento_json=res.get("cumplimiento_criterios", {}),
+            alertas=res.get("alertas_detectadas", []),
+            postulacion_id=postulacion_id
+        )
+        fila["Resultado"] = "Re-analizado (ya existía)" if ya_existia else "Analizado (nuevo)"
+        fila["Puntaje"] = res.get("puntaje_total", 0)
+        fila["Decisión"] = res.get("decision", "")
+    except Exception as e:
+        fila["Resultado"] = f"Error: {e}"
+    return fila
+
+
+# =============================================================================
 # BARRA LATERAL (SIDEBAR ERP)
 # =============================================================================
 with st.sidebar:
@@ -269,11 +421,20 @@ with st.sidebar:
         </div>
     """, unsafe_allow_html=True)
 
-    opcion = st.radio(
-        "Navegación",
-        ["Candidatos", "Vacantes", "Dashboard", "Reportes & Historial"],
-        index=0
-    )
+    if "opcion_menu" not in st.session_state:
+        st.session_state.opcion_menu = "Candidatos"
+
+    for _item in ["Candidatos", "Vacantes", "Dashboard", "Reportes & Historial"]:
+        if st.button(
+            _item,
+            key=f"nav_{_item}",
+            use_container_width=True,
+            type="primary" if st.session_state.opcion_menu == _item else "secondary"
+        ):
+            st.session_state.opcion_menu = _item
+            st.rerun()
+
+    opcion = st.session_state.opcion_menu
     st.markdown("<br><br>", unsafe_allow_html=True)
     st.caption("v2.1 — Asistente IA TTHH")
 
@@ -474,6 +635,49 @@ if opcion == "Candidatos":
                     st.session_state.buffer_contacto = {"nombre": "", "documento": "", "telefono": "", "email": ""}
                     st.session_state.texto_cv = ""
                     st.session_state.ultimo_archivo = None
+                    st.rerun()
+
+        # 4b. CARGA MASIVA DE HOJAS DE VIDA
+        with st.expander("+ Carga Masiva de Hojas de Vida (varias a la vez)", expanded=False):
+            if st.session_state.get("resultado_masivo"):
+                st.markdown("**Resultado de la última carga masiva:**")
+                st.dataframe(pd.DataFrame(st.session_state.resultado_masivo), use_container_width=True, hide_index=True)
+                if st.button("Cerrar resumen", key="cerrar_resumen_masivo"):
+                    st.session_state.resultado_masivo = None
+                    st.rerun()
+
+            st.caption(
+                f"Cada archivo se lee, se extraen sus datos de contacto, se crea el candidato y su postulación y se analiza con IA. "
+                f"Máximo {MAX_LOTE_MASIVO} archivos por carga, unos {PAUSA_MASIVO_SEG} segundos por hoja de vida por el límite de la IA gratuita. "
+                f"Mantenga esta pestaña abierta mientras procesa."
+            )
+            v_sel_masivo = st.selectbox("Vacante Objetivo *", list(v_dict.keys()), key="vacante_masiva")
+            archivos_masivos = st.file_uploader(
+                "Cargar varias Hojas de Vida (PDF, DOCX, TXT):",
+                type=["pdf", "docx", "txt"],
+                accept_multiple_files=True,
+                key="uploader_cv_masivo"
+            )
+            if archivos_masivos:
+                st.caption(f"{len(archivos_masivos)} archivo(s) seleccionado(s).")
+
+            if st.button("Procesar y Analizar Todas", type="primary", key="btn_masivo", disabled=not archivos_masivos):
+                if len(archivos_masivos) > MAX_LOTE_MASIVO:
+                    st.error(f"Seleccionó {len(archivos_masivos)} archivos; el máximo por carga es {MAX_LOTE_MASIVO}.")
+                else:
+                    v_masiva = v_dict[v_sel_masivo]
+                    resultados = []
+                    total_archivos = len(archivos_masivos)
+                    barra = st.progress(0.0)
+                    estado_masivo = st.empty()
+                    for i, archivo in enumerate(archivos_masivos, start=1):
+                        estado_masivo.caption(f"Procesando {i} de {total_archivos}: {archivo.name}")
+                        inicio = time.time()
+                        resultados.append(_procesar_hv_masiva(archivo, v_masiva))
+                        barra.progress(i / total_archivos)
+                        if i < total_archivos:
+                            time.sleep(max(0, PAUSA_MASIVO_SEG - (time.time() - inicio)))
+                    st.session_state.resultado_masivo = resultados
                     st.rerun()
 
     # 5. FICHA DETALLADA DE ANÁLISIS IA (Resultado claro y tabla de ponderación)
