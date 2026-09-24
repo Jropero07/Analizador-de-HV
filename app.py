@@ -37,17 +37,58 @@ def _leer_secreto(nombre, defecto=""):
     return str(valor).strip()
 
 
+_VARS_CLARO = """
+    --bg-main: #F8FAFC; --surface: #FFFFFF; --surface-alt: #F1F5F9; --border-color: #E2E8F0;
+    --text-dark: #0F172A; --text-muted: #64748B; --text-soft: #475569;
+    --sidebar-bg: #FFFFFF; --nav-hover: #EEF2FF; --nav-active-bg: #DBEAFE; --nav-active-text: #1E3A8A;
+    --input-bg: #EEF2F7; --primary-blue: #0047FF; --accent-blue: #2563EB;
+    --ok-bg: #DCFCE7; --ok-text: #166534; --ok-border: #BBF7D0;
+    --warn-bg: #FEF3C7; --warn-text: #92400E; --warn-border: #FDE68A;
+    --bad-bg: #FEE2E2; --bad-text: #991B1B; --bad-border: #FECACA;
+    --info-bg: #EFF6FF; --info-text: #1D4ED8; --info-border: #BFDBFE;
+    --login-grad: linear-gradient(180deg, #DBEAFE 0%, #EFF6FF 55%, #F8FAFC 100%);
+"""
+
+_VARS_OSCURO = """
+    --bg-main: #0E1117; --surface: #161B26; --surface-alt: #1F2633; --border-color: #2E3648;
+    --text-dark: #F1F5F9; --text-muted: #94A3B8; --text-soft: #CBD5E1;
+    --sidebar-bg: #111827; --nav-hover: #1F2937; --nav-active-bg: #1E3A8A; --nav-active-text: #FFFFFF;
+    --input-bg: #232B3B; --primary-blue: #60A5FA; --accent-blue: #3B82F6;
+    --ok-bg: #12351F; --ok-text: #86EFAC; --ok-border: #1F5C36;
+    --warn-bg: #3A2A0B; --warn-text: #FCD34D; --warn-border: #6B4A10;
+    --bad-bg: #3B1416; --bad-text: #FCA5A5; --bad-border: #7F1D1D;
+    --info-bg: #172554; --info-text: #93C5FD; --info-border: #1E3A8A;
+    --login-grad: linear-gradient(180deg, #0B1220 0%, #111827 60%, #0E1117 100%);
+"""
+
+
+def _css_tema():
+    """Variables de color claro/oscuro: siguen el tema activo de Streamlit o, si no se conoce, el del sistema."""
+    try:
+        tipo = st.context.theme.type
+    except Exception:
+        tipo = None
+    css = "<style>:root {" + _VARS_CLARO + "}"
+    if tipo == "dark":
+        css += ":root {" + _VARS_OSCURO + "}"
+    elif tipo != "light":
+        css += "@media (prefers-color-scheme: dark) { :root {" + _VARS_OSCURO + "} }"
+    return css + "</style>"
+
+
+_TEMA_CSS = _css_tema()
+
 _LOGIN_CSS = """
 <style>
     .stApp {
-        background: linear-gradient(180deg, #DBEAFE 0%, #EFF6FF 55%, #F8FAFC 100%) !important;
+        background: var(--login-grad) !important;
     }
     [data-testid="stHeader"] { background: transparent !important; }
     [data-testid="stMainBlockContainer"], .block-container {
         max-width: 420px !important;
         margin: 110px auto 0 auto !important;
         padding: 0 40px 36px 40px !important;
-        background: #FFFFFF;
+        background: var(--surface);
         border-radius: 28px;
         box-shadow: 0 18px 50px rgba(30, 58, 138, 0.18);
     }
@@ -59,20 +100,20 @@ _LOGIN_CSS = """
         box-shadow: 0 10px 24px rgba(37, 99, 235, 0.35);
     }
     .login-titulo {
-        text-align: center; font-size: 1.25rem; font-weight: 700; color: #0F172A;
+        text-align: center; font-size: 1.25rem; font-weight: 700; color: var(--text-dark);
     }
     .login-sub {
-        text-align: center; font-size: 0.85rem; color: #64748B; margin-bottom: 22px;
+        text-align: center; font-size: 0.85rem; color: var(--text-muted); margin-bottom: 22px;
     }
     [data-testid="stForm"] { border: none !important; padding: 0 !important; }
     [data-baseweb="input"], [data-baseweb="base-input"] {
-        background-color: #EEF2F7 !important;
+        background-color: var(--input-bg) !important;
         border: none !important;
         border-radius: 999px !important;
     }
     [data-testid="stTextInput"] input {
         background-color: transparent !important;
-        color: #0F172A !important;
+        color: var(--text-dark) !important;
         padding: 12px 18px !important;
     }
     [data-testid="stFormSubmitButton"] button {
@@ -100,6 +141,7 @@ _LOGIN_ENCABEZADO = """
 
 _APP_PASSWORD = _leer_secreto("APP_PASSWORD")
 if _APP_PASSWORD and not st.session_state.get("autenticado"):
+    st.markdown(_TEMA_CSS, unsafe_allow_html=True)
     st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
     st.markdown(_LOGIN_ENCABEZADO, unsafe_allow_html=True)
     with st.form("form_login"):
@@ -121,16 +163,6 @@ STYLING_ERP = """
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    :root {
-        --sidebar-bg: #FFFFFF;
-        --primary-blue: #0047FF;
-        --accent-blue: #2563EB;
-        --bg-main: #F8FAFC;
-        --border-color: #E2E8F0;
-        --text-dark: #0F172A;
-        --text-muted: #64748B;
-    }
-
     * {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     }
@@ -143,14 +175,14 @@ STYLING_ERP = """
     /* BARRA LATERAL (Sidebar Dark Navy ERP) */
     [data-testid="stSidebar"] {
         background-color: var(--sidebar-bg) !important;
-        border-right: 1px solid #E2E8F0;
+        border-right: 1px solid var(--border-color);
         padding-top: 0.5rem;
     }
 
     .sidebar-brand-box {
         padding: 12px 14px;
         margin-bottom: 18px;
-        border-bottom: 1px solid #E2E8F0;
+        border-bottom: 1px solid var(--border-color);
         display: flex;
         align-items: center;
         gap: 12px;
@@ -176,14 +208,14 @@ STYLING_ERP = """
     }
 
     .sidebar-brand-title {
-        color: #0F172A;
+        color: var(--text-dark);
         font-size: 0.95rem;
         font-weight: 700;
         letter-spacing: 0.2px;
     }
 
     .sidebar-brand-sub {
-        color: #64748B;
+        color: var(--text-muted);
         font-size: 0.75rem;
     }
 
@@ -193,15 +225,15 @@ STYLING_ERP = """
         gap: 10px;
         padding: 14px 8px 10px 8px;
         margin-top: 6px;
-        border-top: 1px solid #E2E8F0;
+        border-top: 1px solid var(--border-color);
     }
 
     .perfil-avatar {
         width: 38px;
         height: 38px;
         border-radius: 50%;
-        background-color: #DBEAFE;
-        color: #1E3A8A;
+        background-color: var(--nav-active-bg);
+        color: var(--nav-active-text);
         display: flex;
         align-items: center;
         justify-content: center;
@@ -211,25 +243,25 @@ STYLING_ERP = """
 
     .perfil-nombre {
         display: block;
-        color: #0F172A;
+        color: var(--text-dark);
         font-weight: 600;
         font-size: 0.9rem;
     }
 
     .perfil-rol {
         display: block;
-        color: #64748B;
+        color: var(--text-muted);
         font-size: 0.75rem;
     }
 
     [data-testid="stSidebar"] .st-key-btn_cerrar_sesion button {
-        background-color: #FEF2F2 !important;
-        border: 1px solid #FCA5A5 !important;
+        background-color: var(--bad-bg) !important;
+        border: 1px solid var(--bad-border) !important;
         justify-content: center !important;
     }
 
     [data-testid="stSidebar"] .st-key-btn_cerrar_sesion button p {
-        color: #B91C1C !important;
+        color: var(--bad-text) !important;
         font-weight: 600 !important;
         text-align: center !important;
     }
@@ -248,31 +280,31 @@ STYLING_ERP = """
     [data-testid="stSidebar"] .stButton > button p,
     [data-testid="stSidebar"] .stButton > button div,
     [data-testid="stSidebar"] .stButton > button span {
-        color: #0F172A !important;
+        color: var(--text-dark) !important;
         font-size: 0.95rem !important;
         font-weight: 500 !important;
         text-align: left !important;
     }
 
     [data-testid="stSidebar"] .stButton > button:hover {
-        background-color: #EEF2FF !important;
+        background-color: var(--nav-hover) !important;
     }
 
     [data-testid="stSidebar"] .stButton > button[kind="primary"],
     [data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] {
-        background-color: #DBEAFE !important;
-        border-left: 4px solid #2563EB !important;
+        background-color: var(--nav-active-bg) !important;
+        border-left: 4px solid var(--accent-blue) !important;
     }
 
     [data-testid="stSidebar"] .stButton > button[kind="primary"] p,
     [data-testid="stSidebar"] .stButton > button[data-testid="stBaseButton-primary"] p {
-        color: #1E3A8A !important;
+        color: var(--nav-active-text) !important;
         font-weight: 700 !important;
     }
 
     [data-testid="stSidebar"] [data-testid="stCaptionContainer"],
     [data-testid="stSidebar"] [data-testid="stCaptionContainer"] p {
-        color: #64748B !important;
+        color: var(--text-muted) !important;
     }
 
     /* OCULTAR CÍRCULO DEL RADIO BUTTON EN SIDEBAR POR COMPLETO */
@@ -324,7 +356,7 @@ STYLING_ERP = """
     /* SOLO SOMBREADO EN LA OPCIÓN SELECCIONADA (SIN CÍRCULO) */
     [data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] > label[data-checked="true"],
     [data-testid="stSidebar"] div[data-testid="stRadio"] div[role="radiogroup"] > label:has(input:checked) {
-        background-color: #1E293B !important;
+        background-color: var(--text-dark) !important;
         color: #FFFFFF !important;
         font-weight: 600 !important;
         border-left: 4px solid var(--accent-blue) !important;
@@ -363,7 +395,7 @@ STYLING_ERP = """
     }
 
     .kpi-card {
-        background-color: #FFFFFF;
+        background-color: var(--surface);
         border: 1px solid var(--border-color);
         border-left: 4px solid var(--primary-blue);
         border-radius: 8px;
@@ -393,11 +425,11 @@ STYLING_ERP = """
         font-size: 0.75rem;
         font-weight: 600;
     }
-    .status-pendiente { background-color: #F1F5F9; color: #475569; }
-    .status-revision { background-color: #FEF3C7; color: #92400E; }
-    .status-entrevista { background-color: #DCFCE7; color: #166534; }
-    .status-aprobado { background-color: #DCFCE7; color: #166534; }
-    .status-descartado { background-color: #FEE2E2; color: #991B1B; }
+    .status-pendiente { background-color: var(--surface-alt); color: var(--text-soft); }
+    .status-revision { background-color: var(--warn-bg); color: var(--warn-text); }
+    .status-entrevista { background-color: var(--ok-bg); color: var(--ok-text); }
+    .status-aprobado { background-color: var(--ok-bg); color: var(--ok-text); }
+    .status-descartado { background-color: var(--bad-bg); color: var(--bad-text); }
 
     .badge-score-pill {
         display: inline-block;
@@ -406,10 +438,10 @@ STYLING_ERP = """
         font-size: 0.78rem;
         font-weight: 700;
     }
-    .score-high { background-color: #DCFCE7; color: #166534; border: 1px solid #BBF7D0; }
-    .score-mid { background-color: #FEF3C7; color: #92400E; border: 1px solid #FDE68A; }
-    .score-low { background-color: #FEE2E2; color: #991B1B; border: 1px solid #FECACA; }
-    .score-none { background-color: #F1F5F9; color: #64748B; }
+    .score-high { background-color: var(--ok-bg); color: var(--ok-text); border: 1px solid var(--ok-border); }
+    .score-mid { background-color: var(--warn-bg); color: var(--warn-text); border: 1px solid var(--warn-border); }
+    .score-low { background-color: var(--bad-bg); color: var(--bad-text); border: 1px solid var(--bad-border); }
+    .score-none { background-color: var(--surface-alt); color: var(--text-muted); }
 
     /* BOTONES */
     div.stButton > button {
@@ -421,6 +453,7 @@ STYLING_ERP = """
     }
 </style>
 """
+st.markdown(_TEMA_CSS, unsafe_allow_html=True)
 st.markdown(STYLING_ERP, unsafe_allow_html=True)
 
 # Inicialización de buffers en session_state
@@ -622,8 +655,8 @@ if opcion == "Candidatos":
     # 3. Sub-encabezado
     st.markdown("""
         <div style="margin-bottom: 14px;">
-            <span style="font-size: 1.15rem; font-weight: 700; color: #0F172A;">Registro y Evaluación de Candidatos</span><br>
-            <span style="font-size: 0.85rem; color: #64748B;">Registre candidatos, procese su Hoja de Vida y consulte el estudio automatizado de afinidad con IA.</span>
+            <span style="font-size: 1.15rem; font-weight: 700; color: var(--text-dark);">Registro y Evaluación de Candidatos</span><br>
+            <span style="font-size: 0.85rem; color: var(--text-muted);">Registre candidatos, procese su Hoja de Vida y consulte el estudio automatizado de afinidad con IA.</span>
         </div>
     """, unsafe_allow_html=True)
 
@@ -849,11 +882,11 @@ if opcion == "Candidatos":
                 resumen = p_actual_analisis.get("resumen_ejecutivo") or "Sin resumen disponible."
 
                 # Banner de Veredicto y Score
-                color_score = "#166534" if score >= 70 else "#92400E" if score >= 50 else "#991B1B"
-                bg_score = "#DCFCE7" if score >= 70 else "#FEF3C7" if score >= 50 else "#FEE2E2"
+                color_score = "var(--ok-text)" if score >= 70 else "var(--warn-text)" if score >= 50 else "var(--bad-text)"
+                bg_score = "var(--ok-bg)" if score >= 70 else "var(--warn-bg)" if score >= 50 else "var(--bad-bg)"
 
                 st.markdown(f"""
-                    <div style="background-color: {bg_score}; border: 1px solid {color_score}33; border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
+                    <div style="background-color: {bg_score}; border: 1px solid var(--border-color); border-radius: 8px; padding: 16px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center;">
                         <div>
                             <span style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase; color: {color_score};">Veredicto de la Inteligencia Artificial</span><br>
                             <span style="font-size: 1.3rem; font-weight: 700; color: {color_score};">{decision}</span>
@@ -1015,7 +1048,7 @@ if opcion == "Candidatos":
     else:
         # Cabecera de la tabla
         st.markdown("""
-            <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 8px 8px 0 0; padding: 10px 16px; display: grid; grid-template-columns: 0.8fr 2.2fr 1.8fr 2fr 1.1fr 1fr; font-size: 0.78rem; font-weight: 700; color: #64748B;">
+            <div style="background-color: var(--bg-main); border: 1px solid var(--border-color); border-radius: 8px 8px 0 0; padding: 10px 16px; display: grid; grid-template-columns: 0.8fr 2.2fr 1.8fr 2fr 1.1fr 1fr; font-size: 0.78rem; font-weight: 700; color: var(--text-muted);">
                 <div>CÓDIGO</div>
                 <div>NOMBRE / CANDIDATO</div>
                 <div>VACANTE / ÁREA</div>
@@ -1043,19 +1076,19 @@ if opcion == "Candidatos":
 
             # Fila de datos
             st.markdown(f"""
-                <div style="background-color: #FFFFFF; border-left: 1px solid #E2E8F0; border-right: 1px solid #E2E8F0; border-bottom: 1px solid #E2E8F0; padding: 10px 16px; display: grid; grid-template-columns: 0.8fr 2.2fr 1.8fr 2fr 1.1fr 1fr; align-items: center; font-size: 0.86rem;">
-                    <div style="color: #64748B; font-weight: 600;">#{cand['id']}</div>
+                <div style="background-color: var(--surface); border-left: 1px solid var(--border-color); border-right: 1px solid var(--border-color); border-bottom: 1px solid var(--border-color); padding: 10px 16px; display: grid; grid-template-columns: 0.8fr 2.2fr 1.8fr 2fr 1.1fr 1fr; align-items: center; font-size: 0.86rem;">
+                    <div style="color: var(--text-muted); font-weight: 600;">#{cand['id']}</div>
                     <div>
-                        <strong style="color: #0F172A;">{cand.get('nombre') or 'Sin nombre'}</strong><br>
-                        <span style="font-size: 0.75rem; color: #64748B;">{doc_display}</span>
+                        <strong style="color: var(--text-dark);">{cand.get('nombre') or 'Sin nombre'}</strong><br>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">{doc_display}</span>
                     </div>
                     <div>
-                        <span style="color: #1E293B; font-weight: 500;">{cand.get('vacante_titulo', '')}</span><br>
-                        <span style="font-size: 0.75rem; color: #64748B;">{cand.get('vacante_area', '')}</span>
+                        <span style="color: var(--text-dark); font-weight: 500;">{cand.get('vacante_titulo', '')}</span><br>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">{cand.get('vacante_area', '')}</span>
                     </div>
                     <div>
-                        <span style="color: #0F172A; font-size: 0.82rem;">{email_display}</span><br>
-                        <span style="font-size: 0.75rem; color: #64748B;">{tel_display}</span>
+                        <span style="color: var(--text-dark); font-size: 0.82rem;">{email_display}</span><br>
+                        <span style="font-size: 0.75rem; color: var(--text-muted);">{tel_display}</span>
                     </div>
                     <div>
                         <span class="badge-status {est_class}">{est}</span>
@@ -1231,9 +1264,9 @@ elif opcion == "Dashboard":
             for v in vac_abiertas:
                 pts = database.obtener_postulaciones_por_vacante(v["id"])
                 st.markdown(f"""
-                    <div style="background: white; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;">
-                        <strong style="color: #0F172A;">{v['titulo']}</strong> ({v['area']})<br>
-                        <span style="font-size: 0.8rem; color: #64748B;">Postulaciones asociadas: <strong>{len(pts)}</strong></span>
+                    <div style="background: var(--surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;">
+                        <strong style="color: var(--text-dark);">{v['titulo']}</strong> ({v['area']})<br>
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Postulaciones asociadas: <strong>{len(pts)}</strong></span>
                     </div>
                 """, unsafe_allow_html=True)
 
@@ -1246,9 +1279,9 @@ elif opcion == "Dashboard":
             for p in postuls:
                 score_str = f"Puntaje IA: {p['puntaje_total']}/100" if p.get('puntaje_total') is not None else "Pendiente IA"
                 st.markdown(f"""
-                    <div style="background: white; border: 1px solid #E2E8F0; border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;">
-                        <strong style="color: #0F172A;">{p.get('nombre')}</strong> — {p.get('vacante_titulo')}<br>
-                        <span style="font-size: 0.8rem; color: #64748B;">Estado: <em>{p.get('estado')}</em> | {score_str}</span>
+                    <div style="background: var(--surface); border: 1px solid var(--border-color); border-radius: 8px; padding: 12px 16px; margin-bottom: 10px;">
+                        <strong style="color: var(--text-dark);">{p.get('nombre')}</strong> — {p.get('vacante_titulo')}<br>
+                        <span style="font-size: 0.8rem; color: var(--text-muted);">Estado: <em>{p.get('estado')}</em> | {score_str}</span>
                     </div>
                 """, unsafe_allow_html=True)
 

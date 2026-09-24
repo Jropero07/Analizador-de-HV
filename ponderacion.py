@@ -260,10 +260,10 @@ def _puntaje_de_entrada(entrada):
 
 
 _BADGES = {
-    "Cumple": ("#DCFCE7", "#166534", "#BBF7D0"),
-    "Parcial": ("#FEF3C7", "#92400E", "#FDE68A"),
-    "No cumple": ("#FEE2E2", "#991B1B", "#FECACA"),
-    "Sin evaluar": ("#F1F5F9", "#64748B", "#E2E8F0"),
+    "Cumple": ("var(--ok-bg)", "var(--ok-text)", "var(--ok-border)"),
+    "Parcial": ("var(--warn-bg)", "var(--warn-text)", "var(--warn-border)"),
+    "No cumple": ("var(--bad-bg)", "var(--bad-text)", "var(--bad-border)"),
+    "Sin evaluar": ("var(--surface-alt)", "var(--text-muted)", "var(--border-color)"),
 }
 
 
@@ -340,13 +340,13 @@ def generar_tabla_ponderacion_html(vacante, analisis):
             celda_aporte = f"{marca}{aporte:.1f}"
 
         filas += f"""
-        <tr style="border-bottom: 1px solid #F1F5F9;">
-            <td style="padding: 10px 14px; font-weight: 600; color: #0F172A;">{html.escape(c['nombre'][:1].upper() + c['nombre'][1:])}</td>
-            <td style="padding: 10px 14px; text-align: center;"><span style="background:#EFF6FF; color:#1D4ED8; padding:3px 8px; border-radius:6px; font-weight:700; font-size:0.78rem; border:1px solid #BFDBFE;">{c['peso']:g}%</span></td>
+        <tr style="border-bottom: 1px solid var(--surface-alt);">
+            <td style="padding: 10px 14px; font-weight: 600; color: var(--text-dark);">{html.escape(c['nombre'][:1].upper() + c['nombre'][1:])}</td>
+            <td style="padding: 10px 14px; text-align: center;"><span style="background:var(--info-bg); color:var(--info-text); padding:3px 8px; border-radius:6px; font-weight:700; font-size:0.78rem; border:1px solid var(--info-border);">{c['peso']:g}%</span></td>
             <td style="padding: 10px 14px; text-align: center;">{_badge(etiqueta)}</td>
-            <td style="padding: 10px 14px; text-align: center; color:#0F172A;">{celda_puntaje}</td>
-            <td style="padding: 10px 14px; text-align: center; font-weight:600; color:#0F172A;">{celda_aporte}</td>
-            <td style="padding: 10px 14px; color: #475569; font-size: 0.82rem;">{html.escape(detalle)}</td>
+            <td style="padding: 10px 14px; text-align: center; color:var(--text-dark);">{celda_puntaje}</td>
+            <td style="padding: 10px 14px; text-align: center; font-weight:600; color:var(--text-dark);">{celda_aporte}</td>
+            <td style="padding: 10px 14px; color: var(--text-soft); font-size: 0.82rem;">{html.escape(detalle)}</td>
         </tr>
         """
 
@@ -367,15 +367,15 @@ def generar_tabla_ponderacion_html(vacante, analisis):
     fila_nota = ""
     if nota:
         fila_nota = (
-            f'<div style="padding:10px 14px; font-size:0.78rem; color:#92400E; background:#FFFBEB; '
-            f'border-top:1px solid #FDE68A;">{html.escape(nota)}</div>'
+            f'<div style="padding:10px 14px; font-size:0.78rem; color:var(--warn-text); background:var(--warn-bg); '
+            f'border-top:1px solid var(--warn-border);">{html.escape(nota)}</div>'
         )
 
     return _compactar_html(f"""
-    <div style="background:#FFFFFF; border:1px solid #E2E8F0; border-radius:8px; overflow:hidden; margin-top:8px; margin-bottom:18px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
+    <div style="background:var(--surface); border:1px solid var(--border-color); border-radius:8px; overflow:hidden; margin-top:8px; margin-bottom:18px; box-shadow:0 1px 2px rgba(0,0,0,0.02);">
         <table style="width:100%; border-collapse:collapse; font-size:0.86rem;">
             <thead>
-                <tr style="background-color:#F8FAFC; border-bottom:2px solid #E2E8F0; color:#475569; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px;">
+                <tr style="background-color:var(--bg-main); border-bottom:2px solid var(--border-color); color:var(--text-soft); font-size:0.75rem; text-transform:uppercase; letter-spacing:0.5px;">
                     <th style="padding:10px 14px; text-align:left;">Requisito de Ponderación</th>
                     <th style="padding:10px 14px; text-align:center;">Peso</th>
                     <th style="padding:10px 14px; text-align:center;">Resultado IA</th>
@@ -386,11 +386,11 @@ def generar_tabla_ponderacion_html(vacante, analisis):
             </thead>
             <tbody>
                 {filas}
-                <tr style="background:#F8FAFC; border-top:2px solid #E2E8F0;">
-                    <td style="padding:10px 14px; font-weight:700; color:#0F172A;">Total ponderado</td>
+                <tr style="background:var(--bg-main); border-top:2px solid var(--border-color);">
+                    <td style="padding:10px 14px; font-weight:700; color:var(--text-dark);">Total ponderado</td>
                     <td style="padding:10px 14px; text-align:center; font-weight:700;">100%</td>
                     <td></td><td></td>
-                    <td style="padding:10px 14px; text-align:center; font-weight:800; color:#0F172A;">{total_txt}</td>
+                    <td style="padding:10px 14px; text-align:center; font-weight:800; color:var(--text-dark);">{total_txt}</td>
                     <td></td>
                 </tr>
             </tbody>
