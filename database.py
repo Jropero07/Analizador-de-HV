@@ -587,6 +587,13 @@ def inicializar_db():
         WHERE fecha_actualizacion IS NULL
     """)
 
+    _agregar_columna_si_no_existe(
+        cursor,
+        "postulaciones",
+        "observaciones_tthh",
+        "TEXT"
+    )
+
     # --------------------------------------------------------
     # MIGRACIÓN DE ESTADOS ANTIGUOS Y DATOS PREVIOS
     # --------------------------------------------------------
@@ -1409,6 +1416,34 @@ def actualizar_estado_postulacion(
     conn.close()
 
 
+def actualizar_observacion_postulacion(postulacion_id, observacion):
+    """Guarda la observación manual del líder de TTHH sobre una postulación."""
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        UPDATE postulaciones
+        SET
+            observaciones_tthh = ?,
+            fecha_actualizacion = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (
+        _normalizar(observacion),
+        postulacion_id
+    ))
+
+    _registrar_historial(
+        cursor,
+        "postulacion",
+        postulacion_id,
+        "observacion_tthh",
+        "Observación de TTHH actualizada"
+    )
+
+    conn.commit()
+    conn.close()
+
+
 def eliminar_postulacion(postulacion_id):
     """
     Elimina una postulación y sus análisis/documentos asociados.
@@ -1928,6 +1963,7 @@ def obtener_reporte_completo_excel(vacante_id=None):
 
             p.fuente AS Fuente,
             p.estado AS Estado_Postulacion,
+            p.observaciones_tthh AS Observaciones_TTHH,
             p.fecha_postulacion AS Fecha_Postulacion,
 
             a.puntaje_total AS Puntaje_IA,

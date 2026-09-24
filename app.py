@@ -35,12 +35,76 @@ def _leer_secreto(nombre, defecto=""):
     return str(valor).strip()
 
 
+_LOGIN_CSS = """
+<style>
+    .stApp {
+        background: linear-gradient(180deg, #DBEAFE 0%, #EFF6FF 55%, #F8FAFC 100%) !important;
+    }
+    [data-testid="stHeader"] { background: transparent !important; }
+    [data-testid="stMainBlockContainer"], .block-container {
+        max-width: 420px !important;
+        margin: 110px auto 0 auto !important;
+        padding: 0 40px 36px 40px !important;
+        background: #FFFFFF;
+        border-radius: 28px;
+        box-shadow: 0 18px 50px rgba(30, 58, 138, 0.18);
+    }
+    .login-avatar {
+        width: 88px; height: 88px; border-radius: 50%;
+        background: linear-gradient(135deg, #1E3A8A, #2563EB);
+        display: flex; align-items: center; justify-content: center;
+        position: relative; top: -44px; margin: 0 auto -20px auto;
+        box-shadow: 0 10px 24px rgba(37, 99, 235, 0.35);
+    }
+    .login-titulo {
+        text-align: center; font-size: 1.25rem; font-weight: 700; color: #0F172A;
+    }
+    .login-sub {
+        text-align: center; font-size: 0.85rem; color: #64748B; margin-bottom: 22px;
+    }
+    [data-testid="stForm"] { border: none !important; padding: 0 !important; }
+    [data-baseweb="input"], [data-baseweb="base-input"] {
+        background-color: #EEF2F7 !important;
+        border: none !important;
+        border-radius: 999px !important;
+    }
+    [data-testid="stTextInput"] input {
+        background-color: transparent !important;
+        color: #0F172A !important;
+        padding: 12px 18px !important;
+    }
+    [data-testid="stFormSubmitButton"] button {
+        background: linear-gradient(90deg, #1E3A8A, #2563EB) !important;
+        border: none !important;
+        border-radius: 999px !important;
+        padding: 10px 0 !important;
+        box-shadow: 0 8px 20px rgba(37, 99, 235, 0.30) !important;
+    }
+    [data-testid="stFormSubmitButton"] button p {
+        color: #FFFFFF !important; font-weight: 700 !important; letter-spacing: 1.5px !important;
+    }
+</style>
+"""
+
+_LOGIN_ENCABEZADO = """
+<div class="login-avatar">
+    <svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0z"/>
+    </svg>
+</div>
+<div class="login-titulo">Sistema de Talento Humano</div>
+<div class="login-sub">Colegio Americano de Barranquilla</div>
+"""
+
 _APP_PASSWORD = _leer_secreto("APP_PASSWORD")
 if _APP_PASSWORD and not st.session_state.get("autenticado"):
-    st.title("Acceso — Talento Humano")
-    _usuario = st.text_input("Usuario")
-    _clave = st.text_input("Contraseña", type="password")
-    if st.button("Ingresar", type="primary"):
+    st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
+    st.markdown(_LOGIN_ENCABEZADO, unsafe_allow_html=True)
+    with st.form("form_login"):
+        _usuario = st.text_input("Usuario", placeholder="Usuario", label_visibility="collapsed")
+        _clave = st.text_input("Contraseña", type="password", placeholder="Contraseña", label_visibility="collapsed")
+        _entrar = st.form_submit_button("INGRESAR", type="primary", use_container_width=True)
+    if _entrar:
         if _usuario.strip() == _leer_secreto("APP_USER", "admin") and _clave.strip() == _APP_PASSWORD:
             st.session_state.autenticado = True
             st.rerun()
@@ -782,6 +846,17 @@ if opcion == "Candidatos":
                         st.toast(f"Estado actualizado a: {nuevo_est_sel}", icon="✔")
                         st.rerun()
 
+                    obs_tthh = st.text_area(
+                        "Observaciones del líder de TTHH:",
+                        value=p_sel.get("observaciones_tthh") or "",
+                        key=f"obs_tthh_{p_sel['id']}",
+                        height=120
+                    )
+                    if st.button("Guardar observación", key=f"guardar_obs_{p_sel['id']}", use_container_width=True):
+                        database.actualizar_observacion_postulacion(p_sel["id"], obs_tthh)
+                        st.toast("Observación guardada", icon="✔")
+                        st.rerun()
+
                     st.markdown("---")
                     st.caption("Recalcula el puntaje con la ponderación actual de la vacante. No cambia el estado de la postulación.")
                     if st.button("Volver a analizar con IA", key=f"reanalizar_{p_sel['id']}", use_container_width=True):
@@ -1121,5 +1196,15 @@ elif opcion == "Reportes & Historial":
         st.info("No existen postulaciones para generar el reporte.")
     else:
         st.dataframe(df, use_container_width=True)
-        csv = df.to_csv(index=False).encode('utf-8')
+        csv = df.to_csv(index=False).encode('utf-8-sig')
         st.download_button("Descargar Reporte en CSV", csv, "reporte_seleccion_tthh.csv", "text/csv")
+
+        import io
+        buffer_xlsx = io.BytesIO()
+        df.to_excel(buffer_xlsx, index=False, sheet_name="Reporte")
+        st.download_button(
+            "Descargar Reporte en Excel",
+            buffer_xlsx.getvalue(),
+            "reporte_seleccion_tthh.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
