@@ -164,9 +164,34 @@ if database.hay_usuarios_registrados() and not st.session_state.get("autenticado
             st.session_state.nombre_usuario = _datos_usuario["nombre"]
             st.session_state.rol = _datos_usuario["rol"]
             st.session_state.permisos = _datos_usuario["permisos"]
+            st.session_state.debe_cambiar_clave = _datos_usuario["debe_cambiar_clave"]
             st.rerun()
         else:
             st.error("Usuario o contraseña incorrectos.")
+    st.stop()
+
+if st.session_state.get("autenticado") and st.session_state.get("debe_cambiar_clave"):
+    st.markdown(_TEMA_CSS, unsafe_allow_html=True)
+    st.markdown(_LOGIN_CSS, unsafe_allow_html=True)
+    st.markdown(
+        '<div class="login-titulo">Actualice su contraseña</div>'
+        '<div class="login-sub">Su clave es temporal. Defina una nueva para continuar.</div>',
+        unsafe_allow_html=True
+    )
+    with st.form("form_cambiar_clave"):
+        _clave_nueva = st.text_input("Nueva contraseña", type="password", placeholder="Nueva contraseña", label_visibility="collapsed")
+        _clave_confirmar = st.text_input("Confirmar contraseña", type="password", placeholder="Confirmar contraseña", label_visibility="collapsed")
+        _confirmar = st.form_submit_button("ACTUALIZAR CONTRASEÑA", type="primary", use_container_width=True)
+    if _confirmar:
+        if not _clave_nueva.strip() or len(_clave_nueva.strip()) < 4:
+            st.error("La contraseña debe tener al menos 4 caracteres.")
+        elif _clave_nueva.strip() != _clave_confirmar.strip():
+            st.error("Las contraseñas no coinciden.")
+        else:
+            database.cambiar_password_propio(st.session_state.usuario_id, _clave_nueva.strip())
+            st.session_state.debe_cambiar_clave = False
+            st.toast("Contraseña actualizada", icon="✔")
+            st.rerun()
     st.stop()
 
 if "rol" not in st.session_state:
@@ -1407,12 +1432,17 @@ elif opcion == "Usuarios":
                     "vacantes": perm_vacantes, "usuarios": perm_usuarios
                 }
 
+            nu_clave_temporal = st.checkbox(
+                "El usuario debe cambiar esta contraseña al iniciar sesión",
+                value=True, key=f"nu_temp_{_n}"
+            )
+
             if st.button("Crear Usuario", type="primary", use_container_width=True, key=f"btn_crear_usuario_{_n}"):
                 if not nu_nombre.strip() or not nu_usuario.strip() or not nu_clave.strip():
                     st.error("Diligencie nombre, usuario y contraseña.")
                 else:
                     try:
-                        database.crear_usuario(nu_usuario, nu_nombre, nu_clave, nu_tipo, permisos_elegidos)
+                        database.crear_usuario(nu_usuario, nu_nombre, nu_clave, nu_tipo, permisos_elegidos, nu_clave_temporal)
                         st.toast(f'Usuario "{nu_usuario}" creado con éxito', icon="✔")
                         st.session_state.crear_usuario_nonce += 1
                         st.rerun()
@@ -1500,6 +1530,24 @@ elif opcion == "Usuarios":
                     with cg2:
                         if st.button("Cancelar", key=f"edit_cancelar_{u['id']}", use_container_width=True):
                             st.session_state.editando_usuario_id = None
+                            st.rerun()
+
+                    st.markdown("---")
+                    st.caption("Restablecer contraseña olvidada")
+                    ed_clave_nueva = st.text_input(
+                        "Contraseña temporal/genérica", type="password", key=f"edit_clave_{u['id']}"
+                    )
+                    ed_clave_obligatoria = st.checkbox(
+                        "El usuario debe cambiarla al iniciar sesión",
+                        value=True, key=f"edit_temp_{u['id']}"
+                    )
+                    if st.button("Restablecer contraseña", key=f"edit_reset_{u['id']}", use_container_width=True):
+                        if not ed_clave_nueva.strip():
+                            st.error("Ingrese la nueva contraseña.")
+                        else:
+                            database.restablecer_password(u["id"], ed_clave_nueva.strip(), ed_clave_obligatoria)
+                            st.session_state.editando_usuario_id = None
+                            st.toast("Contraseña restablecida", icon="✔")
                             st.rerun()
 
 

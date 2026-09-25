@@ -606,11 +606,13 @@ def inicializar_db():
             rol TEXT NOT NULL DEFAULT 'lector',
             permisos TEXT,
             activo INTEGER NOT NULL DEFAULT 1,
+            debe_cambiar_clave INTEGER NOT NULL DEFAULT 0,
             fecha_creacion DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     """)
 
     _agregar_columna_si_no_existe(cursor, "usuarios", "permisos", "TEXT")
+    _agregar_columna_si_no_existe(cursor, "usuarios", "debe_cambiar_clave", "INTEGER NOT NULL DEFAULT 0")
 
     # Usuarios creados antes de tener permisos por casilla: se les asigna el
     # equivalente (el antiguo "admin" pasa a Súper administrador con todo).
@@ -1494,13 +1496,16 @@ def _verificar_password(password, hash_guardado):
     return hmac.compare_digest(_hash_password(password, sal), hash_guardado)
 
 
-def crear_usuario(usuario, nombre, password, rol="lector", permisos=None):
+def crear_usuario(usuario, nombre, password, rol="lector", permisos=None, debe_cambiar_clave=False):
     """
     Crea un usuario. Lanza ValueError si el usuario ya existe o si faltan datos.
 
     Para los roles predefinidos (super_admin, control_total, lector) los permisos
     son fijos y se ignora lo que llegue en `permisos`. Solo con rol="personalizado"
     se guardan los permisos indicados casilla por casilla.
+
+    `debe_cambiar_clave=True` marca la contraseña como temporal: el usuario
+    deberá cambiarla la primera vez que inicie sesión.
     """
     usuario = _normalizar(usuario)
     if rol not in ROLES_VALIDOS:
@@ -1514,8 +1519,9 @@ def crear_usuario(usuario, nombre, password, rol="lector", permisos=None):
     cursor = conn.cursor()
     try:
         cursor.execute(
-            "INSERT INTO usuarios (usuario, nombre, password_hash, rol, permisos) VALUES (?, ?, ?, ?, ?)",
-            (usuario, _normalizar(nombre) or usuario, _hash_password(password), rol, json.dumps(permisos_finales))
+            "INSERT INTO usuarios (usuario, nombre, password_hash, rol, permisos, debe_cambiar_clave) VALUES (?, ?, ?, ?, ?, ?)",
+            (usuario, _normalizar(nombre) or usuario, _hash_password(password), rol,
+             json.dumps(permisos_finales), 1 if debe_cambiar_clave else 0)
         )
         conn.commit()
         return cursor.lastrowid
@@ -1524,6 +1530,34 @@ def crear_usuario(usuario, nombre, password, rol="lector", permisos=None):
         raise ValueError(f'Ya existe un usuario con el nombre "{usuario}".')
     finally:
         conn.close()
+
+
+def restablecer_password(usuario_id, password_nueva, debe_cambiar_clave=True):
+    """
+    Asigna una contraseña temporal/genérica a un usuario existente (recuperación
+    de clave olvidada). Por defecto lo obliga a cambiarla al iniciar sesión;
+    con debe_cambiar_clave=False queda como contraseña fija.
+    """
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE usuarios SET password_hash = ?, debe_cambiar_clave = ? WHERE id = ?",
+        (_hash_password(password_nueva), 1 if debe_cambiar_clave else 0, usuario_id)
+    )
+    conn.commit()
+    conn.close()
+
+
+def cambiar_password_propio(usuario_id, password_nueva):
+    """El propio usuario define su contraseña definitiva y queda liberado del bloqueo."""
+    conn = obtener_conexion()
+    cursor = conn.cursor()
+    cursor.execute(
+        "UPDATE usuarios SET password_hash = ?, debe_cambiar_clave = 0 WHERE id = ?",
+        (_hash_password(password_nueva), usuario_id)
+    )
+    conn.commit()
+    conn.close()
 
 
 def _permisos_de_fila(fila):
@@ -1541,7 +1575,7 @@ def verificar_usuario(usuario, password):
     conn = obtener_conexion()
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, usuario, nombre, password_hash, rol, permisos, activo FROM usuarios WHERE usuario = ?",
+        "SELECT id, usuario, nombre, password_hash, rol, permisos, activo, debe_cambiar_clave FROM usuarios WHERE usuario = ?",
         (_normalizar(usuario),)
     )
     fila = cursor.fetchone()
@@ -1551,14 +1585,15 @@ def verificar_usuario(usuario, password):
         return None
     return {
         "id": fila["id"], "usuario": fila["usuario"], "nombre": fila["nombre"],
-        "rol": fila["rol"], "permisos": _permisos_de_fila(fila)
+        "rol": fila["rol"], "permisos": _permisos_de_fila(fila),
+        "debe_cambiar_clave": bool(fila["debe_cambiar_clave"])
     }
 
 
 def obtener_usuarios():
     conn = obtener_conexion()
     cursor = conn.cursor()
-    cursor.execute("SELECT id, usuario, nombre, rol, permisos, activo, fecha_creacion FROM usuarios ORDER BY id")
+    cursor.execute("SELECT id, usuario, nombre, rol, permisos, activo, debe_cambiar_clave, fecha_creacion FROM usuarios ORDER BY id")
     filas = [dict(f) for f in cursor.fetchall()]
     conn.close()
     for f in filas:
