@@ -212,10 +212,9 @@ NOMBRE_ROL = database.NOMBRES_ROL.get(st.session_state.get("rol"), "Personalizad
 # =============================================================================
 STYLING_ERP = """
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
     * {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        font-family: Arial, Helvetica, sans-serif;
+        font-size: 14px;
     }
 
     .stApp {
